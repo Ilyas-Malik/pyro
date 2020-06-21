@@ -58,7 +58,7 @@ def main(name, num_inner_samples, num_outer_samples, device, n, p, scale):
 
     # Train guide
     print("Training")
-    opt_eig_ape_loss(design, loss, num_samples=10, num_steps=20000, optim=optimizer)
+    opt_eig_ape_loss(design, loss, num_samples=10, num_steps=200, optim=optimizer)
 
     # Evaluate
     print("Evaluation")
@@ -73,8 +73,8 @@ def main(name, num_inner_samples, num_outer_samples, device, n, p, scale):
         lower += lower_loss(design, n_per_batch, evaluation=True)[1].detach().cpu()
         upper += upper_loss(design, (n_per_batch, num_inner_samples), evaluation=True)[1].detach().cpu()
 
-    results['final_upper_bound'] = upper.cpu() / n_batches
-    results['final_lower_bound'] = lower.cpu() / n_batches
+    results['final_upper_bound'] = upper / n_batches
+    results['final_lower_bound'] = lower / n_batches
 
     print(results['final_lower_bound'], results['final_upper_bound'])
 
@@ -85,11 +85,11 @@ def main(name, num_inner_samples, num_outer_samples, device, n, p, scale):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Use ACE/VNMC to evaluate docking designs")
     parser.add_argument("--name", default="", type=str)
-    parser.add_argument("--num-inner-samples", default=2500, type=int)
-    parser.add_argument("--num-outer-samples", default=100000, type=int)
+    parser.add_argument("--num-inner-samples", default=25, type=int)
+    parser.add_argument("--num-outer-samples", default=1000, type=int)
     parser.add_argument("--device", default="cuda:0", type=str)
-    parser.add_argument("-n", default=20, type=int)
-    parser.add_argument("-p", default=20, type=int)
+    parser.add_argument("-n", default=2, type=int)
+    parser.add_argument("-p", default=2, type=int)
     parser.add_argument("--scale", default=1., type=float)
     args = parser.parse_args()
 
