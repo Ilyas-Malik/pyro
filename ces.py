@@ -174,111 +174,16 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
             # Design phase
             t = time.time()
 
-            if typ in ['marginal', 'nmc']:
-                # Suggested num_acquisition = 50
-                if num_acquisition < 50:
-                    raise ValueError("Setting num_acquisition too low")
-                # Initialization
-                noise = torch.tensor(0.2).pow(2)
-                # X = 100*rexpand(torch.rand((num_parallel, num_acq)), 4)
-                X = .01 + 99.99 * torch.rand((num_parallel, num_acquisition, 1, design_dim))
-
-                if typ == 'marginal':
-                    def f(X):
-                        n_steps = oed_n_steps // len(oed_lr)
-                        for lr in oed_lr:
-                            marginal_eig(model, X, observation_labels=["y"], target_labels=["rho", "alpha", "slope"],
-                                         num_samples=oed_n_samples, num_steps=n_steps, guide=guide,
-                                         optim=optim.Adam({"lr": lr}))
-                        return marginal_eig(model, X, observation_labels=["y"], target_labels=["rho", "alpha", "slope"],
-                                            num_samples=oed_n_samples, num_steps=1, guide=guide,
-                                            final_num_samples=oed_final_n_samples, optim=optim.Adam({"lr": 1e-6}))
-                elif typ == 'nmc':
-                    def f(X):
-                        return torch.cat([nmc_eig(model, X[:, 25 * i:25 * (i + 1), ...], ["y"],
-                                                  ["rho", "alpha", "slope"], N=70*70, M=70)
-                                          for i in range(X.shape[1]//25)], dim=1)
-
-                y = f(X)
-
-                # Random search
-                # # print(y.mean(1), y.max(1), y.min(1), y.std(1))
-                # d_star_index = torch.argmax(y, dim=1)
-                # # print(d_star_index.shape)
-                # # print(d_star_index)
-                # d_star_design = X[torch.arange(num_parallel), d_star_index, ...].unsqueeze(-2)
-
-                # GPBO
-                y = y.detach().clone()
-                kernel = gp.kernels.Matern52(input_dim=1, lengthscale=torch.tensor(lengthscale),
-                                             variance=y.var(unbiased=True))
-                X = X.squeeze(-2)
-                constraint = torch.distributions.constraints.interval(1e-6, 100.)
-
-                for i in range(num_bo_steps):
-                    Kff = kernel(X)
-                    Kff += noise * torch.eye(Kff.shape[-1])
-                    Lff = Kff.cholesky(upper=False)
-                    Xinit = .01 + 99.99 * torch.rand((num_parallel, num_acquisition, design_dim))
-                    unconstrained_Xnew = transform_to(constraint).inv(Xinit).detach().clone().requires_grad_(True)
-                    minimizer = torch.optim.LBFGS([unconstrained_Xnew], max_eval=20)
-
-                    def gp_ucb1():
-                        minimizer.zero_grad()
-                        Xnew = transform_to(constraint)(unconstrained_Xnew)
-                        # Xnew.register_hook(lambda x: print('Xnew grad', x))
-                        KXXnew = kernel(X, Xnew)
-                        LiK = torch.triangular_solve(KXXnew, Lff, upper=False)[0]
-                        Liy = torch.triangular_solve(y.unsqueeze(-1).clamp(max=20.), Lff, upper=False)[0]
-                        mean = rmv(LiK.transpose(-1, -2), Liy.squeeze(-1))
-                        KXnewXnew = kernel(Xnew)
-                        var = (KXnewXnew - LiK.transpose(-1, -2).matmul(LiK)).diagonal(dim1=-2, dim2=-1)
-                        ucb = -(mean + 2*var.sqrt())
-                        loss = ucb.sum()
-                        torch.autograd.backward(unconstrained_Xnew,
-                                                torch.autograd.grad(loss, unconstrained_Xnew, retain_graph=True))
-                        return loss
-
-                    minimizer.step(gp_ucb1)
-                    X_acquire = transform_to(constraint)(unconstrained_Xnew).detach().clone()
-                    # print('X_acquire', X_acquire)
-                    y_acquire = f(X_acquire.unsqueeze(-2)).detach().clone()
-                    # print('y_acquire', y_acquire)
-
-                    X = torch.cat([X, X_acquire], dim=1)
-                    y = torch.cat([y, y_acquire], dim=1)
-
-                max_eig, d_star_index = torch.max(y, dim=1)
-                logging.info('max EIG {}'.format(max_eig))
-                results['max EIG'] = max_eig
-                d_star_design = X[torch.arange(num_parallel), d_star_index, ...].unsqueeze(-2).unsqueeze(-2)
-
-            elif typ in ['posterior-grad', 'pce-grad', 'ace-grad']:
+            if typ in ['posterior-grad', 'pce-grad', 'ace-grad']:
                 model_learn_xi = make_learn_xi_model(model)
                 grad_start_lr, grad_end_lr = 0.001, 0.001
 
-                if typ == 'posterior-grad':
-
-                    # Suggested num_gradient_steps = 5000
-                    posterior_guide = LinearPosteriorGuide((num_parallel, num_acquisition))
-                    posterior_guide.set_prior(rho_concentration, alpha_concentration, slope_mu, slope_sigma)
-                    loss = _differentiable_posterior_loss(model_learn_xi, posterior_guide, ["y"], ["rho", "alpha", "slope"])
-
-                elif typ == 'pce-grad':
+                if typ == 'pce-grad':
 
                     # Suggested num_gradient_steps = 2500
                     eig_loss = lambda d, N, **kwargs: differentiable_pce_eig(
                         model=model_learn_xi, design=d, observation_labels=["y"], target_labels=["rho", "alpha", "slope"],
                         N=N, M=num_contrast_samples, **kwargs)
-                    loss = neg_loss(eig_loss)
-
-                elif typ == 'ace-grad':
-
-                    # Suggested num_gradient_steps = 1500
-                    posterior_guide = LinearPosteriorGuide((num_parallel, num_acquisition))
-                    posterior_guide.set_prior(rho_concentration, alpha_concentration, slope_mu, slope_sigma)
-                    eig_loss = _differentiable_ace_eig_loss(model_learn_xi, posterior_guide, num_contrast_samples,
-                                                            ["y"], ["rho", "alpha", "slope"])
                     loss = neg_loss(eig_loss)
 
                 constraint = torch.distributions.constraints.interval(1e-6, 100.)
@@ -299,9 +204,6 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
                 results['min loss'] = min_ape
                 X = pyro.param("xi").detach().clone()
                 d_star_design = X[torch.arange(num_parallel), d_star_index, ...].unsqueeze(-2)
-
-            elif typ == 'rand':
-                d_star_design = .01 + 99.99 * torch.rand((num_parallel, 1, 1, design_dim))
 
             elapsed = time.time() - t
             logging.info('elapsed design time {}'.format(elapsed))
