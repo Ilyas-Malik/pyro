@@ -93,8 +93,9 @@ def make_learn_xi_model(model):
         return model(design)
     return model_learn_xi
 
-
+#HELP what is dim, replace with n,p ?
 def elboguide(design, dim=10):
+
     rho_concentration = pyro.param("rho_concentration", torch.ones(dim, 1, 2),
                                    constraint=torch.distributions.constraints.positive)
     alpha_concentration = pyro.param("alpha_concentration", torch.ones(dim, 1, 3),
@@ -119,9 +120,10 @@ def neg_loss(loss):
         return (-a for a in loss(*args, **kwargs))
     return new_loss
 
-
+# HELP with the parameters of the function, should I keep union ? what are those loglevel etc
+# HELP what does function do, numsteps ?
 def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_gradient_steps, num_samples,
-         num_contrast_samples, num_acquisition, obs_sd, loglevel):
+         num_contrast_samples, num_acquisition, obs_sd, loglevel, device, n, p, scale):
     numeric_level = getattr(logging, loglevel.upper(), None)
     if not isinstance(numeric_level, int):
         raise ValueError("Invalid log level: {}".format(loglevel))
@@ -157,19 +159,15 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
         w_prior_scale = scale * torch.ones(p, device=device)
         sigma_prior_scale = scale * torch.tensor(1., device=device)
 
-        true_model = make_regression_model(
-            w_prior_loc, w_prior_scale, sigma_prior_scale, xi_init)
+        true_model = pyro.condition(make_regression_model(
+            w_prior_loc, w_prior_scale, sigma_prior_scale, xi_init),
+                                    {"w": torch.ones(p, dtype=torch.float64), "sigma": torch.tensor(1.)})
 
         elbo_n_samples, elbo_n_steps, elbo_lr = 10, 1000, 0.04
         design_dim = 6
 
         contrastive_samples = num_samples
         targets = ["w", "sigma"]
-
-        true_model = pyro.condition(make_ces_model(rho_concentration, alpha_concentration, slope_mu, slope_sigma,
-                                                   observation_sd),
-                                    {"rho": torch.tensor([.9, .1]), "alpha": torch.tensor([.2, .3, .5]),
-                                     "slope": torch.tensor(10.)})
 
         d_star_designs = torch.tensor([])
         ys = torch.tensor([])
