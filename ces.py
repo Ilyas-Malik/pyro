@@ -65,6 +65,27 @@ def make_ces_model(rho_concentration, alpha_concentration, slope_mu, slope_sigma
     return ces_model
 
 
+def make_regression_model(w_loc, w_scale, sigma_scale, xi_init, observation_label="y"):
+    def regression_model(design_prototype):
+        design = pyro.param("xi", xi_init)
+        design = (design / design.norm(dim=-1, p=1, keepdim=True)).expand(design_prototype.shape)
+        if is_bad(design):
+            raise ArithmeticError("bad design, contains nan or inf")
+        batch_shape = design.shape[:-2]
+        with pyro.plate_stack("plate_stack", batch_shape):
+            # `w` is shape p, the prior on each component is independent
+            w = pyro.sample("w", dist.Laplace(w_loc, w_scale).to_event(1))
+            # `sigma` is scalar
+            sigma = 1e-6 + pyro.sample("sigma", dist.Exponential(sigma_scale)).unsqueeze(-1)
+            mean = rmv(design, w)
+            sd = sigma
+            y = pyro.sample(observation_label, dist.Normal(mean, sd).to_event(1))
+            return y
+
+    return regression_model
+
+
+
 def make_learn_xi_model(model):
     def model_learn_xi(design_prototype):
         design = pyro.param("xi")
@@ -91,20 +112,6 @@ def elboguide(design, dim=10):
         pyro.sample("alpha", dist.Dirichlet(alpha_concentration.expand(alpha_shape)))
         pyro.sample("slope", dist.LogNormal(slope_mu.expand(batch_shape),
                                             slope_sigma.expand(batch_shape)))
-
-
-def marginal_guide(mu_init, log_sigma_init, shape, label):
-    def guide(design, observation_labels, target_labels):
-        mu = pyro.param("marginal_mu", mu_init * torch.ones(*shape))
-        log_sigma = pyro.param("marginal_log_sigma", log_sigma_init * torch.ones(*shape))
-        ends = pyro.param("marginal_ends", 1./3 * torch.ones(*shape, 3),
-                          constraint=torch.distributions.constraints.simplex)
-        response_dist = dist.CensoredSigmoidNormalEnds(
-            loc=mu, scale=torch.exp(log_sigma), upper_lim=1. - epsilon, lower_lim=epsilon,
-            p0=ends[..., 0], p1=ends[..., 1], p2=ends[..., 2]
-        ).to_event(1)
-        pyro.sample(label, response_dist)
-    return guide
 
 
 def neg_loss(loss):
@@ -141,19 +148,23 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
         else:
             seed = int(torch.rand(tuple()) * 2**30)
             pyro.set_rng_seed(seed)
-        marginal_mu_init, marginal_log_sigma_init = 0., 6.
-        oed_n_samples, oed_n_steps, oed_final_n_samples, oed_lr = 10, 1250, 2000, [0.1, 0.01, 0.001]
+
+
+        xi_init = torch.randn((num_parallel, n, p), device=device)
+        # Change the prior distribution here
+        # prior params
+        w_prior_loc = torch.zeros(p, device=device)
+        w_prior_scale = scale * torch.ones(p, device=device)
+        sigma_prior_scale = scale * torch.tensor(1., device=device)
+
+        true_model = make_regression_model(
+            w_prior_loc, w_prior_scale, sigma_prior_scale, xi_init)
+
         elbo_n_samples, elbo_n_steps, elbo_lr = 10, 1000, 0.04
-        num_bo_steps = 4
         design_dim = 6
 
-        guide = marginal_guide(marginal_mu_init, marginal_log_sigma_init, (num_parallel, num_acquisition, 1), "y")
-
-        prior = make_ces_model(torch.ones(num_parallel, 1, 2), torch.ones(num_parallel, 1, 3),
-                               torch.ones(num_parallel, 1), 3.*torch.ones(num_parallel, 1), observation_sd)
-        rho_concentration = torch.ones(num_parallel, 1, 2)
-        alpha_concentration = torch.ones(num_parallel, 1, 3)
-        slope_mu, slope_sigma = torch.ones(num_parallel, 1), 3.*torch.ones(num_parallel, 1)
+        contrastive_samples = num_samples
+        targets = ["w", "sigma"]
 
         true_model = pyro.condition(make_ces_model(rho_concentration, alpha_concentration, slope_mu, slope_sigma,
                                                    observation_sd),
@@ -181,9 +192,9 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
                 if typ == 'pce-grad':
 
                     # Suggested num_gradient_steps = 2500
-                    eig_loss = lambda d, N, **kwargs: differentiable_pce_eig(
-                        model=model_learn_xi, design=d, observation_labels=["y"], target_labels=["rho", "alpha", "slope"],
-                        N=N, M=num_contrast_samples, **kwargs)
+                    eig_loss = lambda d, N, **kwargs: pce_eig(
+                        model=model_learn_xi, design=d, observation_labels=["y"], target_labels=targets,
+                        N=N, M=contrastive_samples, **kwargs)
                     loss = neg_loss(eig_loss)
 
                 constraint = torch.distributions.constraints.interval(1e-6, 100.)
