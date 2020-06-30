@@ -144,7 +144,7 @@ def neg_loss(loss):
 # HELP with the parameters of the function, should I keep union ? what are those loglevel etc
 # HELP what does function do, numsteps ?
 def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_gradient_steps, num_samples,
-         num_contrast_samples, num_acquisition, loglevel, device, n, p, scale):
+         num_contrast_samples, num_acquisition, loglevel, n, p, scale):
     numeric_level = getattr(logging, loglevel.upper(), None)
     if not isinstance(numeric_level, int):
         raise ValueError("Invalid log level: {}".format(loglevel))
@@ -172,15 +172,15 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
             pyro.set_rng_seed(seed)
 
 
-        xi_init = torch.randn((num_parallel, n, p), device=device)
+        xi_init = torch.randn((num_parallel, n, p))
         # Change the prior distribution here
         # prior params
-        w_prior_loc = torch.zeros(p, device=device)
-        w_prior_scale = scale * torch.ones(p, device=device)
-        sigma_prior_scale = scale * torch.tensor(1., device=device)
+        w_loc = torch.zeros(p)
+        w_scale = scale * torch.ones(p)
+        sigma_scale = scale * torch.tensor(1.)
 
         true_model = pyro.condition(make_regression_model(
-            w_prior_loc, w_prior_scale, sigma_prior_scale, xi_init),
+            w_loc, w_scale, sigma_scale, xi_init),
                                     {"w": torch.ones(p, dtype=torch.float64), "sigma": torch.tensor(1.)})
 
         elbo_n_samples, elbo_n_steps, elbo_lr = 10, 1000, 0.04
@@ -275,7 +275,10 @@ if __name__ == "__main__":
     parser.add_argument("--num-samples", default=10, type=int)
     parser.add_argument("--num-contrast-samples", default=10, type=int)
     parser.add_argument("--num-acquisition", default=8, type=int)
+    parser.add_argument("-n", default=2, type=int)
+    parser.add_argument("-p", default=6, type=int)
+    parser.add_argument("--scale", default=1., type=float)
     args = parser.parse_args()
     main(args.num_steps, args.num_parallel, args.name, args.typs, args.seed, args.lengthscale,
          args.num_gradient_steps, args.num_samples, args.num_contrast_samples, args.num_acquisition,
-         args.observation_sd, args.loglevel)
+         args.loglevel, args.n, args.p, args.scale)
