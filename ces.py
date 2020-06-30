@@ -94,6 +94,8 @@ def make_learn_xi_model(model):
     return model_learn_xi
 
 #HELP what is dim, replace with n,p ?
+#HELP is w size p or w_loc size p
+#HELP what does elboguide do ? why do we specify posterior distributions here
 def elboguide(design, dim=10):
 
     rho_concentration = pyro.param("rho_concentration", torch.ones(dim, 1, 2),
@@ -103,16 +105,35 @@ def elboguide(design, dim=10):
     slope_mu = pyro.param("slope_mu", torch.ones(dim, 1))
     slope_sigma = pyro.param("slope_sigma", 3.*torch.ones(dim, 1),
                              constraint=torch.distributions.constraints.positive)
+#HELP why is the shape :-2
     batch_shape = design.shape[:-2]
     with ExitStack() as stack:
+# HELP
         for plate in iter_plates_to_shape(batch_shape):
             stack.enter_context(plate)
         rho_shape = batch_shape + (rho_concentration.shape[-1],)
         pyro.sample("rho", dist.Dirichlet(rho_concentration.expand(rho_shape)))
         alpha_shape = batch_shape + (alpha_concentration.shape[-1],)
         pyro.sample("alpha", dist.Dirichlet(alpha_concentration.expand(alpha_shape)))
+#HELP why batch_shape in slope and not in rho, how to adapt
         pyro.sample("slope", dist.LogNormal(slope_mu.expand(batch_shape),
                                             slope_sigma.expand(batch_shape)))
+
+def elboguide(design, n, p):
+
+    w_loc = pyro.param("w_loc", torch.ones(p))
+    w_scale = pyro.param("w_scale", torch.ones(p),
+                                     constraint=torch.distributions.constraints.positive)
+    sigma_scale = pyro.param("sigma_scale", torch.ones(1),
+                                     constraint=torch.distributions.constraints.positive)
+    batch_shape = design.shape[:-2]
+    with ExitStack() as stack:
+        for plate in iter_plates_to_shape(batch_shape):
+            stack.enter_context(plate)
+        w_shape = batch_shape + (w_loc.shape[-1],)
+        pyro.sample("w", dist.Laplace(w_loc.expand(w_shape), w_scale.expand(w_shape)))
+        pyro.sample("sigma", dist.Exponential(sigma_scale))
+
 
 
 def neg_loss(loss):
@@ -123,7 +144,7 @@ def neg_loss(loss):
 # HELP with the parameters of the function, should I keep union ? what are those loglevel etc
 # HELP what does function do, numsteps ?
 def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_gradient_steps, num_samples,
-         num_contrast_samples, num_acquisition, obs_sd, loglevel, device, n, p, scale):
+         num_contrast_samples, num_acquisition, loglevel, device, n, p, scale):
     numeric_level = getattr(logging, loglevel.upper(), None)
     if not isinstance(numeric_level, int):
         raise ValueError("Invalid log level: {}".format(loglevel))
@@ -140,7 +161,6 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
     except OSError:
         logging.info("File {} does not exist yet".format(results_file))
     typs = typs.split(",")
-    observation_sd = torch.tensor(obs_sd)
 
     for typ in typs:
         logging.info("Type {}".format(typ))
@@ -174,7 +194,7 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
 
         for step in range(num_steps):
             logging.info("Step {}".format(step))
-            model = make_ces_model(rho_concentration, alpha_concentration, slope_mu, slope_sigma, observation_sd)
+            model = make_regression_model(w_loc, w_scale, sigma_scale, xi_init)
             results = {'typ': typ, 'step': step, 'git-hash': get_git_revision_hash(), 'seed': seed,
                        'lengthscale': lengthscale, 'observation_sd': observation_sd,
                        'num_gradient_steps': num_gradient_steps, 'num_samples': num_samples,
@@ -224,19 +244,18 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
             ys = torch.cat([ys, y], dim=-1)
             logging.info('ys {} {}'.format(ys.squeeze(), ys.shape))
             results['y'] = y
-
+#HELP Function elbo in EIG file
             elbo_learn(
-                prior, d_star_designs, ["y"], ["rho", "alpha", "slope"], elbo_n_samples, elbo_n_steps,
+                prior, d_star_designs, ["y"], ["w", "sigma"], elbo_n_samples, elbo_n_steps,
                 partial(elboguide, dim=num_parallel), {"y": ys}, optim.Adam({"lr": elbo_lr})
             )
-            rho_concentration = pyro.param("rho_concentration").detach().data.clone()
-            alpha_concentration = pyro.param("alpha_concentration").detach().data.clone()
-            slope_mu = pyro.param("slope_mu").detach().data.clone()
-            slope_sigma = pyro.param("slope_sigma").detach().data.clone()
-            logging.info("rho_concentration {} \n alpha_concentration {} \n slope_mu {} \n slope_sigma {}".format(
-                rho_concentration.squeeze(), alpha_concentration.squeeze(), slope_mu.squeeze(), slope_sigma.squeeze()))
-            results['rho_concentration'], results['alpha_concentration'] = rho_concentration, alpha_concentration
-            results['slope_mu'], results['slope_sigma'] = slope_mu, slope_sigma
+            w_loc = pyro.param("w_loc").detach().data.clone()
+            w_scale = pyro.param("w_scale").detach().data.clone()
+            sigma_scale = pyro.param("sigma_scale").detach().data.clone()
+            logging.info("w_loc {} \n w_scale {} \n sigma_scale {}".format(
+                w_loc.squeeze(), w_scale.squeeze(), sigma_scale.squeeze()))
+            results['w_loc'], results['w_scale'] = w_loc, w_scale
+            results['sigma_scale'] = sigma_scale
 
             with open(results_file, 'ab') as f:
                 pickle.dump(results, f)
@@ -256,7 +275,6 @@ if __name__ == "__main__":
     parser.add_argument("--num-samples", default=10, type=int)
     parser.add_argument("--num-contrast-samples", default=10, type=int)
     parser.add_argument("--num-acquisition", default=8, type=int)
-    parser.add_argument("--observation-sd", default=0.005, type=float)
     args = parser.parse_args()
     main(args.num_steps, args.num_parallel, args.name, args.typs, args.seed, args.lengthscale,
          args.num_gradient_steps, args.num_samples, args.num_contrast_samples, args.num_acquisition,
