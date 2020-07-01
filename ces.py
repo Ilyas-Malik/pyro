@@ -64,10 +64,11 @@ def make_ces_model(rho_concentration, alpha_concentration, slope_mu, slope_sigma
 
     return ces_model
 
-
+#HELP why don't we need n here
 def make_regression_model(w_loc, w_scale, sigma_scale, xi_init, observation_label="y"):
     def regression_model(design_prototype):
         design = pyro.param("xi", xi_init)
+#HELP error here p=1 ?
         design = (design / design.norm(dim=-1, p=1, keepdim=True)).expand(design_prototype.shape)
         if is_bad(design):
             raise ArithmeticError("bad design, contains nan or inf")
@@ -94,7 +95,7 @@ def make_learn_xi_model(model):
     return model_learn_xi
 
 #HELP what is dim, replace with n,p ?
-#HELP is w size p or w_loc size p
+#HELP class TensorLinear(nn.Module): in regression
 #HELP what does elboguide do ? why do we specify posterior distributions here
 def elboguide(design, dim=10):
 
@@ -142,7 +143,8 @@ def neg_loss(loss):
     return new_loss
 
 # HELP with the parameters of the function, should I keep union ? what are those loglevel etc
-# HELP what does function do, numsteps ?
+# Creates rollout with initial fixed parameters, true values of theta fixed ?
+# HELP what does function do, numsteps, num_parallel ?
 def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_gradient_steps, num_samples,
          num_contrast_samples, num_acquisition, loglevel, n, p, scale):
     numeric_level = getattr(logging, loglevel.upper(), None)
@@ -185,7 +187,7 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
 
         elbo_n_samples, elbo_n_steps, elbo_lr = 10, 1000, 0.04
         design_dim = 6
-
+#HELP what are contrastive_samples
         contrastive_samples = num_samples
         targets = ["w", "sigma"]
 
@@ -196,7 +198,7 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
             logging.info("Step {}".format(step))
             model = make_regression_model(w_loc, w_scale, sigma_scale, xi_init)
             results = {'typ': typ, 'step': step, 'git-hash': get_git_revision_hash(), 'seed': seed,
-                       'lengthscale': lengthscale, 'observation_sd': observation_sd,
+                       'lengthscale': lengthscale,
                        'num_gradient_steps': num_gradient_steps, 'num_samples': num_samples,
                        'num_contrast_samples': num_contrast_samples, 'num_acquisition': num_acquisition}
 
@@ -249,6 +251,7 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
                 prior, d_star_designs, ["y"], ["w", "sigma"], elbo_n_samples, elbo_n_steps,
                 partial(elboguide, dim=num_parallel), {"y": ys}, optim.Adam({"lr": elbo_lr})
             )
+#HELP how are the parameters changed
             w_loc = pyro.param("w_loc").detach().data.clone()
             w_scale = pyro.param("w_scale").detach().data.clone()
             sigma_scale = pyro.param("sigma_scale").detach().data.clone()
