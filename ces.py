@@ -65,11 +65,10 @@ def make_ces_model(rho_concentration, alpha_concentration, slope_mu, slope_sigma
     return ces_model
 
 #HELP why don't we need n here
-def make_regression_model(w_loc, w_scale, sigma_scale, xi_init, observation_label="y"):
-    def regression_model(design_prototype):
-        design = pyro.param("xi", xi_init)
+def make_regression_model(w_loc, w_scale, sigma_scale, observation_label="y"):
+    def regression_model(design):
 #HELP error here p=1 ?
-        design = (design / design.norm(dim=-1, p=1, keepdim=True)).expand(design_prototype.shape)
+        design = (design / design.norm(dim=-1, p=1, keepdim=True))
         if is_bad(design):
             raise ArithmeticError("bad design, contains nan or inf")
         batch_shape = design.shape[:-2]
@@ -217,10 +216,8 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
                         N=N, M=contrastive_samples, **kwargs)
                     loss = neg_loss(eig_loss)
 
-                constraint = torch.distributions.constraints.interval(1e-6, 100.)
                 xi_init = .01 + 99.99 * torch.rand((num_parallel, num_acquisition, 1, design_dim // 2))
-                xi_init = torch.cat([xi_init, xi_init], dim=-1)
-                pyro.param("xi", xi_init, constraint=constraint)
+                pyro.param("xi", xi_init)
                 pyro.get_param_store().replace_param("xi", xi_init, pyro.param("xi"))
                 design_prototype = torch.zeros(num_parallel, num_acquisition, 1, design_dim)  # this is annoying, code needs refactor
 
