@@ -66,6 +66,7 @@ def make_ces_model(rho_concentration, alpha_concentration, slope_mu, slope_sigma
 
 def make_regression_model(w_loc, w_scale, sigma_scale, observation_label="y"):
     def regression_model(design):
+
         if is_bad(design):
             raise ArithmeticError("bad design, contains nan or inf")
         batch_shape = design.shape[:-2]
