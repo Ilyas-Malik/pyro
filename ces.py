@@ -68,7 +68,6 @@ def make_ces_model(rho_concentration, alpha_concentration, slope_mu, slope_sigma
 def make_regression_model(w_loc, w_scale, sigma_scale, observation_label="y"):
     def regression_model(design):
 #HELP error here p=1 ?
-        design = (design / design.norm(dim=-1, p=1, keepdim=True))
         if is_bad(design):
             raise ArithmeticError("bad design, contains nan or inf")
         batch_shape = design.shape[:-2]
@@ -173,7 +172,7 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
             pyro.set_rng_seed(seed)
 
 
-        xi_init = torch.randn((num_parallel, n, p))
+        xi_init = 20*torch.randn((num_parallel, n, p))-10
         # Change the prior distribution here
         # prior params
         w_loc = torch.zeros(p)
@@ -181,11 +180,10 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
         sigma_scale = scale * torch.tensor(1.)
 
         true_model = pyro.condition(make_regression_model(
-            w_loc, w_scale, sigma_scale, xi_init),
+            w_loc, w_scale, sigma_scale),
                                     {"w": torch.ones(p, dtype=torch.float64), "sigma": torch.tensor(1.)})
 
         elbo_n_samples, elbo_n_steps, elbo_lr = 10, 1000, 0.04
-        design_dim = 6
 #HELP what are contrastive_samples
         contrastive_samples = num_samples
         targets = ["w", "sigma"]
@@ -216,10 +214,10 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
                         N=N, M=contrastive_samples, **kwargs)
                     loss = neg_loss(eig_loss)
 
-                xi_init = .01 + 99.99 * torch.rand((num_parallel, num_acquisition, 1, design_dim // 2))
+                xi_init = 20 * torch.rand((num_parallel, n, p)) - 10
                 pyro.param("xi", xi_init)
                 pyro.get_param_store().replace_param("xi", xi_init, pyro.param("xi"))
-                design_prototype = torch.zeros(num_parallel, num_acquisition, 1, design_dim)  # this is annoying, code needs refactor
+                design_prototype = torch.zeros(num_parallel, n, p)  # this is annoying, code needs refactor
 
                 start_lr, end_lr = grad_start_lr, grad_end_lr
                 gamma = (end_lr / start_lr) ** (1 / num_gradient_steps)
