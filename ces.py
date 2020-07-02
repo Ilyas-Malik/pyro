@@ -64,11 +64,8 @@ def make_ces_model(rho_concentration, alpha_concentration, slope_mu, slope_sigma
 
     return ces_model
 
-#HELP why don't we need n here
 def make_regression_model(w_loc, w_scale, sigma_scale, observation_label="y"):
     def regression_model(design):
-#HELP error here p=1 ?
-        design = (design / design.norm(dim=-1, p=1, keepdim=True))
         if is_bad(design):
             raise ArithmeticError("bad design, contains nan or inf")
         batch_shape = design.shape[:-2]
@@ -94,8 +91,7 @@ def make_learn_xi_model(model):
     return model_learn_xi
 
 #HELP what is dim, replace with n,p ?
-#HELP class TensorLinear(nn.Module): in regression
-#HELP what does elboguide do ? why do we specify posterior distributions here
+#HELP class TensorLinear(nn.Module): in regression should I include it here ?
 def elboguide(design, dim=10):
 
     rho_concentration = pyro.param("rho_concentration", torch.ones(dim, 1, 2),
@@ -141,11 +137,11 @@ def neg_loss(loss):
         return (-a for a in loss(*args, **kwargs))
     return new_loss
 
-# HELP with the parameters of the function, should I keep union ? what are those loglevel etc
+# HELP what is loglevel, num_acquisition etc
 # Creates rollout with initial fixed parameters, true values of theta fixed ?
 # HELP what does function do, numsteps, num_parallel ?
 def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_gradient_steps, num_samples,
-         num_contrast_samples, num_acquisition, loglevel, n, p, scale):
+         num_contrast_samples, loglevel, n, p, scale):
     numeric_level = getattr(logging, loglevel.upper(), None)
     if not isinstance(numeric_level, int):
         raise ValueError("Invalid log level: {}".format(loglevel))
@@ -173,7 +169,7 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
             pyro.set_rng_seed(seed)
 
 
-        xi_init = torch.randn((num_parallel, n, p))
+        xi_init = 20*torch.randn((num_parallel, n, p))-10
         # Change the prior distribution here
         # prior params
         w_loc = torch.zeros(p)
@@ -181,11 +177,10 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
         sigma_scale = scale * torch.tensor(1.)
 
         true_model = pyro.condition(make_regression_model(
-            w_loc, w_scale, sigma_scale, xi_init),
+            w_loc, w_scale, sigma_scale),
                                     {"w": torch.ones(p, dtype=torch.float64), "sigma": torch.tensor(1.)})
 
         elbo_n_samples, elbo_n_steps, elbo_lr = 10, 1000, 0.04
-        design_dim = 6
 #HELP what are contrastive_samples
         contrastive_samples = num_samples
         targets = ["w", "sigma"]
@@ -199,7 +194,7 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
             results = {'typ': typ, 'step': step, 'git-hash': get_git_revision_hash(), 'seed': seed,
                        'lengthscale': lengthscale,
                        'num_gradient_steps': num_gradient_steps, 'num_samples': num_samples,
-                       'num_contrast_samples': num_contrast_samples, 'num_acquisition': num_acquisition}
+                       'num_contrast_samples': num_contrast_samples}
 
             # Design phase
             t = time.time()
@@ -216,15 +211,16 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
                         N=N, M=contrastive_samples, **kwargs)
                     loss = neg_loss(eig_loss)
 
-                xi_init = .01 + 99.99 * torch.rand((num_parallel, num_acquisition, 1, design_dim // 2))
+                xi_init = 20 * torch.rand((num_parallel, n, p)) - 10
                 pyro.param("xi", xi_init)
                 pyro.get_param_store().replace_param("xi", xi_init, pyro.param("xi"))
-                design_prototype = torch.zeros(num_parallel, num_acquisition, 1, design_dim)  # this is annoying, code needs refactor
+                design_prototype = torch.zeros((num_parallel, n, p))  # this is annoying, code needs refactor
 
                 start_lr, end_lr = grad_start_lr, grad_end_lr
                 gamma = (end_lr / start_lr) ** (1 / num_gradient_steps)
                 scheduler = pyro.optim.ExponentialLR({'optimizer': torch.optim.Adam, 'optim_args': {'lr': start_lr},
                                                       'gamma': gamma})
+                print(design_prototype.shape)
                 ape = opt_eig_ape_loss(design_prototype, loss, num_samples=num_samples, num_steps=num_gradient_steps,
                                        optim=scheduler, final_num_samples=500)
                 min_ape, d_star_index = torch.min(ape, dim=1)
@@ -243,12 +239,10 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
             ys = torch.cat([ys, y], dim=-1)
             logging.info('ys {} {}'.format(ys.squeeze(), ys.shape))
             results['y'] = y
-#HELP Function elbo in EIG file
             elbo_learn(
                 prior, d_star_designs, ["y"], ["w", "sigma"], elbo_n_samples, elbo_n_steps,
                 partial(elboguide, dim=num_parallel), {"y": ys}, optim.Adam({"lr": elbo_lr})
             )
-#HELP how are the parameters changed
             w_loc = pyro.param("w_loc").detach().data.clone()
             w_scale = pyro.param("w_scale").detach().data.clone()
             sigma_scale = pyro.param("sigma_scale").detach().data.clone()
@@ -280,5 +274,5 @@ if __name__ == "__main__":
     parser.add_argument("--scale", default=1., type=float)
     args = parser.parse_args()
     main(args.num_steps, args.num_parallel, args.name, args.typs, args.seed, args.lengthscale,
-         args.num_gradient_steps, args.num_samples, args.num_contrast_samples, args.num_acquisition,
+         args.num_gradient_steps, args.num_samples, args.num_contrast_samples,
          args.loglevel, args.n, args.p, args.scale)
