@@ -91,30 +91,6 @@ def make_learn_xi_model(model):
         return model(design)
     return model_learn_xi
 
-#HELP what is dim, replace with n,p ?
-#HELP class TensorLinear(nn.Module): in regression should I include it here ?
-def elboguide(design, dim=10):
-
-    rho_concentration = pyro.param("rho_concentration", torch.ones(dim, 1, 2),
-                                   constraint=torch.distributions.constraints.positive)
-    alpha_concentration = pyro.param("alpha_concentration", torch.ones(dim, 1, 3),
-                                     constraint=torch.distributions.constraints.positive)
-    slope_mu = pyro.param("slope_mu", torch.ones(dim, 1))
-    slope_sigma = pyro.param("slope_sigma", 3.*torch.ones(dim, 1),
-                             constraint=torch.distributions.constraints.positive)
-#HELP why is the shape :-2
-    batch_shape = design.shape[:-2]
-    with ExitStack() as stack:
-# HELP
-        for plate in iter_plates_to_shape(batch_shape):
-            stack.enter_context(plate)
-        rho_shape = batch_shape + (rho_concentration.shape[-1],)
-        pyro.sample("rho", dist.Dirichlet(rho_concentration.expand(rho_shape)))
-        alpha_shape = batch_shape + (alpha_concentration.shape[-1],)
-        pyro.sample("alpha", dist.Dirichlet(alpha_concentration.expand(alpha_shape)))
-#HELP why batch_shape in slope and not in rho, how to adapt
-        pyro.sample("slope", dist.LogNormal(slope_mu.expand(batch_shape),
-                                            slope_sigma.expand(batch_shape)))
 
 def elboguide(design, n, p):
 
@@ -128,7 +104,7 @@ def elboguide(design, n, p):
         for plate in iter_plates_to_shape(batch_shape):
             stack.enter_context(plate)
         w_shape = batch_shape + (w_loc.shape[-1],)
-        pyro.sample("w", dist.Laplace(w_loc.expand(w_shape), w_scale.expand(w_shape)))
+        pyro.sample("w", dist.Laplace(w_loc.expand(w_shape), w_scale.expand(w_shape)).to_event(1))
         pyro.sample("sigma", dist.Exponential(sigma_scale))
 
 
@@ -179,7 +155,9 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
 
         true_model = pyro.condition(make_regression_model(
             w_loc, w_scale, sigma_scale),
-                                    {"w": torch.ones(p, dtype=torch.float64), "sigma": torch.tensor(1.)})
+                                    {"w": torch.ones(p), "sigma": torch.tensor(1.)})
+
+        prior = make_regression_model(w_loc.clone(), w_scale.clone(), sigma_scale.clone())
 
         elbo_n_samples, elbo_n_steps, elbo_lr = 10, 1000, 0.04
 #HELP what are contrastive_samples
@@ -191,7 +169,7 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
 
         for step in range(num_steps):
             logging.info("Step {}".format(step))
-            model = make_regression_model(w_loc, w_scale, sigma_scale, xi_init)
+            model = make_regression_model(w_loc, w_scale, sigma_scale)
             results = {'typ': typ, 'step': step, 'git-hash': get_git_revision_hash(), 'seed': seed,
                        'lengthscale': lengthscale,
                        'num_gradient_steps': num_gradient_steps, 'num_samples': num_samples,
@@ -224,11 +202,8 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
                 print(design_prototype.shape)
                 ape = opt_eig_ape_loss(design_prototype, loss, num_samples=num_samples, num_steps=num_gradient_steps,
                                        optim=scheduler, final_num_samples=500)
-                min_ape, d_star_index = torch.min(ape, dim=1)
-                logging.info('min loss {}'.format(min_ape))
-                results['min loss'] = min_ape
-                X = pyro.param("xi").detach().clone()
-                d_star_design = X[torch.arange(num_parallel), d_star_index, ...].unsqueeze(-2)
+                d_star_design = pyro.param("xi").detach().clone()
+                print(d_star_design.shape)
 
             elapsed = time.time() - t
             logging.info('elapsed design time {}'.format(elapsed))
@@ -242,7 +217,7 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
             results['y'] = y
             elbo_learn(
                 prior, d_star_designs, ["y"], ["w", "sigma"], elbo_n_samples, elbo_n_steps,
-                partial(elboguide, dim=num_parallel), {"y": ys}, optim.Adam({"lr": elbo_lr})
+                partial(elboguide, n=n, p=p), {"y": ys}, optim.Adam({"lr": elbo_lr})
             )
             w_loc = pyro.param("w_loc").detach().data.clone()
             w_scale = pyro.param("w_scale").detach().data.clone()
@@ -262,7 +237,7 @@ if __name__ == "__main__":
     parser.add_argument("--num-steps", nargs="?", default=20, type=int)
     parser.add_argument("--num-parallel", nargs="?", default=10, type=int)
     parser.add_argument("--name", nargs="?", default="", type=str)
-    parser.add_argument("--typs", nargs="?", default="rand", type=str)
+    parser.add_argument("--typs", nargs="?", default="pce-grad", type=str)
     parser.add_argument("--seed", nargs="?", default=-1, type=int)
     parser.add_argument("--lengthscale", nargs="?", default=10., type=float)
     parser.add_argument("--loglevel", default="info", type=str)
