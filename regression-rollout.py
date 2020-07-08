@@ -30,7 +30,6 @@ epsilon = torch.tensor(2**-22)
 def get_git_revision_hash():
     return subprocess.check_output(['git', 'rev-parse', 'HEAD'])
 
-
 def make_ces_model(rho_concentration, alpha_concentration, slope_mu, slope_sigma, observation_sd, observation_label="y"):
     def ces_model(design):
         if is_bad(design):
@@ -64,6 +63,7 @@ def make_ces_model(rho_concentration, alpha_concentration, slope_mu, slope_sigma
 
     return ces_model
 
+#Creates model with predefined fixed theta (w and sigma), outputs y as a regression outcome
 def make_regression_model(w_loc, w_scale, sigma_scale, observation_label="y"):
     def regression_model(design):
 
@@ -81,7 +81,6 @@ def make_regression_model(w_loc, w_scale, sigma_scale, observation_label="y"):
             return y
 
     return regression_model
-
 
 
 def make_learn_xi_model(model):
@@ -105,7 +104,7 @@ def elboguide(design, n, p):
             stack.enter_context(plate)
         w_shape = batch_shape + (w_loc.shape[-1],)
         pyro.sample("w", dist.Laplace(w_loc.expand(w_shape), w_scale.expand(w_shape)).to_event(1))
-        pyro.sample("sigma", dist.Exponential(sigma_scale))
+        pyro.sample("sigma", dist.Exponential(sigma_scale)).unsqueeze(-1)
 
 
 
@@ -117,7 +116,7 @@ def neg_loss(loss):
 # HELP what is loglevel, num_acquisition etc
 # Creates rollout with initial fixed parameters, true values of theta fixed ?
 # HELP what does function do, numsteps, num_parallel ?
-def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_gradient_steps, num_samples,
+def main(num_steps, num_parallel, experiment_name, typs, seed, num_gradient_steps, num_samples,
          num_contrast_samples, loglevel, n, p, scale):
     numeric_level = getattr(logging, loglevel.upper(), None)
     if not isinstance(numeric_level, int):
@@ -146,7 +145,6 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
             pyro.set_rng_seed(seed)
 
 
-        xi_init = 20*torch.randn((num_parallel, n, p))-10
         # Change the prior distribution here
         # prior params
         w_loc = torch.zeros(p)
@@ -155,7 +153,7 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
 
         true_model = pyro.condition(make_regression_model(
             w_loc, w_scale, sigma_scale),
-                                    {"w": torch.ones(p), "sigma": torch.tensor(1.)})
+                                    {"w": torch.tensor([0.,2.,3.,4.,5.,6.]), "sigma": 2*torch.tensor(1.)})
 
         prior = make_regression_model(w_loc.clone(), w_scale.clone(), sigma_scale.clone())
 
@@ -171,7 +169,6 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
             logging.info("Step {}".format(step))
             model = make_regression_model(w_loc, w_scale, sigma_scale)
             results = {'typ': typ, 'step': step, 'git-hash': get_git_revision_hash(), 'seed': seed,
-                       'lengthscale': lengthscale,
                        'num_gradient_steps': num_gradient_steps, 'num_samples': num_samples,
                        'num_contrast_samples': num_contrast_samples}
 
@@ -234,21 +231,19 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, lengthscale, num_
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CES (Constant Elasticity of Substitution) indifference"
                                                  " iterated experiment design")
-    parser.add_argument("--num-steps", nargs="?", default=20, type=int)
-    parser.add_argument("--num-parallel", nargs="?", default=10, type=int)
+    parser.add_argument("--num-steps", nargs="?", default=20, type=int) #num iterations
+    parser.add_argument("--num-parallel", nargs="?", default=10, type=int) #batch size
     parser.add_argument("--name", nargs="?", default="", type=str)
     parser.add_argument("--typs", nargs="?", default="pce-grad", type=str)
     parser.add_argument("--seed", nargs="?", default=-1, type=int)
-    parser.add_argument("--lengthscale", nargs="?", default=10., type=float)
     parser.add_argument("--loglevel", default="info", type=str)
-    parser.add_argument("--num-gradient-steps", default=1000, type=int)
+    parser.add_argument("--num-gradient-steps", default=1000, type=int) #gradient for convergence of svi to have good variational parameters and
     parser.add_argument("--num-samples", default=10, type=int)
     parser.add_argument("--num-contrast-samples", default=10, type=int)
-    parser.add_argument("--num-acquisition", default=8, type=int)
     parser.add_argument("-n", default=2, type=int)
     parser.add_argument("-p", default=6, type=int)
     parser.add_argument("--scale", default=1., type=float)
     args = parser.parse_args()
-    main(args.num_steps, args.num_parallel, args.name, args.typs, args.seed, args.lengthscale,
+    main(args.num_steps, args.num_parallel, args.name, args.typs, args.seed,
          args.num_gradient_steps, args.num_samples, args.num_contrast_samples,
          args.loglevel, args.n, args.p, args.scale)
