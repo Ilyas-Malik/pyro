@@ -96,6 +96,7 @@ def elboguide(design, n, p):
     w_loc = pyro.param("w_loc", torch.ones(p))
     w_scale = pyro.param("w_scale", torch.ones(p),
                                      constraint=torch.distributions.constraints.positive)
+    sigma_loc = pyro.param("sigma_loc", torch.ones(1))
     sigma_scale = pyro.param("sigma_scale", torch.ones(1),
                                      constraint=torch.distributions.constraints.positive)
     batch_shape = design.shape[:-2]
@@ -103,8 +104,8 @@ def elboguide(design, n, p):
         for plate in iter_plates_to_shape(batch_shape):
             stack.enter_context(plate)
         w_shape = batch_shape + (w_loc.shape[-1],)
-        pyro.sample("w", dist.Laplace(w_loc.expand(w_shape), w_scale.expand(w_shape)).to_event(1))
-        pyro.sample("sigma", dist.Exponential(sigma_scale)).unsqueeze(-1)
+        pyro.sample("w", dist.Normal(w_loc.expand(w_shape), w_scale.expand(w_shape)).to_event(1))
+        pyro.sample("sigma", dist.Normal(sigma_loc, sigma_scale)).unsqueeze(-1)
 
 
 
@@ -153,7 +154,7 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, num_gradient_step
 
         true_model = pyro.condition(make_regression_model(
             w_loc, w_scale, sigma_scale),
-                                    {"w": torch.tensor([0.,2.,3.,4.,5.,6.]), "sigma": 2*torch.tensor(1.)})
+                                    {"w": torch.tensor([0.,2.,3.,4.,5.,6.]), "sigma": torch.tensor(.5)})
 
         prior = make_regression_model(w_loc.clone(), w_scale.clone(), sigma_scale.clone())
 
@@ -165,16 +166,18 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, num_gradient_step
         d_star_designs = torch.tensor([])
         ys = torch.tensor([])
 
+        results = {'typ': typ, 'step': [], 'git-hash': get_git_revision_hash(), 'seed': seed,
+                   'num_gradient_steps': num_gradient_steps, 'num_samples': num_samples,
+                   'num_contrast_samples': num_contrast_samples, 'design_time': [], 'd_star_design': [],
+                   'y': [], 'w_loc': [], 'w_scale': [], 'sigma_scale': []}
+
         for step in range(num_steps):
             logging.info("Step {}".format(step))
             model = make_regression_model(w_loc, w_scale, sigma_scale)
-            results = {'typ': typ, 'step': step, 'git-hash': get_git_revision_hash(), 'seed': seed,
-                       'num_gradient_steps': num_gradient_steps, 'num_samples': num_samples,
-                       'num_contrast_samples': num_contrast_samples}
 
             # Design phase
             t = time.time()
-
+            results['step'].append(step)
             if typ in ['posterior-grad', 'pce-grad', 'ace-grad']:
                 model_learn_xi = make_learn_xi_model(model)
                 grad_start_lr, grad_end_lr = 0.001, 0.001
@@ -204,28 +207,30 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, num_gradient_step
 
             elapsed = time.time() - t
             logging.info('elapsed design time {}'.format(elapsed))
-            results['design_time'] = elapsed
-            results['d_star_design'] = d_star_design
+            results['design_time'].append(elapsed)
+            results['d_star_design'].append(d_star_design)
             logging.info('design {} {}'.format(d_star_design.squeeze(), d_star_design.shape))
             d_star_designs = torch.cat([d_star_designs, d_star_design], dim=-2)
             y = true_model(d_star_design)
             ys = torch.cat([ys, y], dim=-1)
             logging.info('ys {} {}'.format(ys.squeeze(), ys.shape))
-            results['y'] = y
+            results['y'].append(y)
             elbo_learn(
                 prior, d_star_designs, ["y"], ["w", "sigma"], elbo_n_samples, elbo_n_steps,
                 partial(elboguide, n=n, p=p), {"y": ys}, optim.Adam({"lr": elbo_lr})
             )
             w_loc = pyro.param("w_loc").detach().data.clone()
             w_scale = pyro.param("w_scale").detach().data.clone()
+            sigma_loc = pyro.param("sigma_loc").detach().data.clone()
             sigma_scale = pyro.param("sigma_scale").detach().data.clone()
-            logging.info("w_loc {} \n w_scale {} \n sigma_scale {}".format(
-                w_loc.squeeze(), w_scale.squeeze(), sigma_scale.squeeze()))
-            results['w_loc'], results['w_scale'] = w_loc, w_scale
-            results['sigma_scale'] = sigma_scale
+            logging.info("w_loc {} \n w_scale {} \n sigma_loc {} \n sigma_scale {}".format(
+                w_loc.squeeze(), w_scale.squeeze(), sigma_loc.squeeze(), sigma_scale.squeeze()))
+            results['w_loc'].append(w_loc)
+            results['w_scale'].append(w_scale)
+            results['sigma_scale'].append(sigma_scale)
 
-            with open(results_file, 'ab') as f:
-                pickle.dump(results, f)
+        with open(results_file, 'ab') as f:
+            pickle.dump(results, f)
 
 
 if __name__ == "__main__":
