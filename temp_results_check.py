@@ -1,3 +1,4 @@
+print("huh")
 import torch
 from torch.distributions import transform_to
 import argparse
@@ -24,7 +25,28 @@ output_dir = "./run_outputs/ces/"
 name = "regression-rollout-pce"
 experiment_name = output_dir+name
 results_file = experiment_name + '.result_stream.pickle'
+test_file = "./run_outputs/ces/hak"
 print("jfjikd")
-with open(results_file, 'ab') as f:
+
+
+with open(results_file, 'rb') as f:
     res = pickle.load(f)
 print(res)
+
+
+# f'design_time', 'd_star_design', 'y', 'w_loc', 'w_scale', 'sigma_scale'
+
+
+
+# for i in range(20):
+#     d = {"haka" : i}
+#     with open(test_file, 'wb') as f:
+#         res = pickle.dump(d ,f)
+#     f.close()
+
+#
+# for i in range(20):
+#     with open(test_file, 'rb') as f:
+#         res = pickle.load(f)
+#     print(res)
+#     f.close()

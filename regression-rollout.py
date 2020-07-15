@@ -30,39 +30,6 @@ epsilon = torch.tensor(2**-22)
 def get_git_revision_hash():
     return subprocess.check_output(['git', 'rev-parse', 'HEAD'])
 
-def make_ces_model(rho_concentration, alpha_concentration, slope_mu, slope_sigma, observation_sd, observation_label="y"):
-    def ces_model(design):
-        if is_bad(design):
-            raise ArithmeticError("bad design, contains nan or inf")
-        batch_shape = design.shape[:-2]
-        with ExitStack() as stack:
-            for plate in iter_plates_to_shape(batch_shape):
-                stack.enter_context(plate)
-            rho_shape = batch_shape + (rho_concentration.shape[-1],)
-            rho = 0.01 + 0.99 * pyro.sample("rho", dist.Dirichlet(rho_concentration.expand(rho_shape))).select(-1, 0)
-            alpha_shape = batch_shape + (alpha_concentration.shape[-1],)
-            alpha = pyro.sample("alpha", dist.Dirichlet(alpha_concentration.expand(alpha_shape)))
-            slope = pyro.sample("slope", dist.LogNormal(slope_mu.expand(batch_shape), slope_sigma.expand(batch_shape)))
-            rho, slope = rexpand(rho, design.shape[-2]), rexpand(slope, design.shape[-2])
-            d1, d2 = design[..., 0:3], design[..., 3:6]
-            U1rho = (rmv(d1.pow(rho.unsqueeze(-1)), alpha)).pow(1./rho)
-            U2rho = (rmv(d2.pow(rho.unsqueeze(-1)), alpha)).pow(1./rho)
-            mean = slope * (U1rho - U2rho)
-            sd = slope * observation_sd * (1 + torch.norm(d1 - d2, dim=-1, p=2))
-
-            logging.debug('rho max {} min {}'.format(rho.max().item(), rho.min().item()))
-            logging.debug('latent samples: rho {} alpha {} slope mean {} slope median {}'.format(
-                rho.mean().item(), alpha.mean().item(), slope.mean().item(), slope.median().item()))
-            logging.debug('mean: mean {} sd {} min {} max {}'.format(
-                mean.mean().item(), mean.std().item(), mean.min().item(), mean.max().item()))
-            logging.debug('sd: mean {}, sd {}, min {}, max {}'.format(sd.mean(), sd.std(), sd.min(), sd.max()))
-
-            emission_dist = dist.CensoredSigmoidNormal(mean, sd, 1 - epsilon, epsilon).to_event(1)
-            y = pyro.sample(observation_label, emission_dist)
-            return y
-
-    return ces_model
-
 #Creates model with predefined fixed theta (w and sigma), outputs y as a regression outcome
 def make_regression_model(w_loc, w_scale, sigma_scale, observation_label="y"):
     def regression_model(design):
@@ -124,7 +91,7 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, num_gradient_step
         raise ValueError("Invalid log level: {}".format(loglevel))
     logging.basicConfig(level=numeric_level)
 
-    output_dir = "./run_outputs/ces/"
+    output_dir = "./run_outputs/regression_rollout/"
     if not experiment_name:
         experiment_name = output_dir+"{}".format(datetime.datetime.now().isoformat())
     else:
@@ -152,9 +119,19 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, num_gradient_step
         w_scale = scale * torch.ones(p)
         sigma_scale = scale * torch.tensor(1.)
 
-        true_model = pyro.condition(make_regression_model(
-            w_loc, w_scale, sigma_scale),
-                                    {"w": torch.tensor([0.,2.,3.,4.,5.,6.]), "sigma": torch.tensor(.5)})
+        true_w_cov =  torch.tensor([[1., 0., .5, 0., 0., 0.],
+                                    [0., 3., 0., 0., 0., -1.],
+                                    [.5, 0., 1., 0., 0., 0.],
+                                    [0., 0., 0., .2, 0., 0.],
+                                    [0., 0., 0., 0., 1., 0.],
+                                    [0., -1., 0., 0., 0., 5.]])
+        true_w_loc = torch.tensor([0.,2.,-3.,4.,5.,6.])
+        true_w = torch.distributions.multivariate_normal.MultivariateNormal(true_w_loc,
+                                                                            true_w_cov).sample()
+        true_sigma_scale = .9
+        true_sigma = torch.distributions.exponential.Exponential(true_sigma_scale).sample()
+        true_model = pyro.condition(make_regression_model(w_loc, w_scale, sigma_scale),
+                                    {"w": true_w, "sigma": true_sigma})
 
         prior = make_regression_model(w_loc.clone(), w_scale.clone(), sigma_scale.clone())
 
@@ -234,10 +211,10 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, num_gradient_step
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="CES (Constant Elasticity of Substitution) indifference"
+    parser = argparse.ArgumentParser(description="Regression rollouts"
                                                  " iterated experiment design")
     parser.add_argument("--num-steps", nargs="?", default=20, type=int) #num iterations
-    parser.add_argument("--num-parallel", nargs="?", default=10, type=int) #batch size
+    parser.add_argument("--num-parallel", nargs="?", default=2, type=int) #batch size
     parser.add_argument("--name", nargs="?", default="", type=str)
     parser.add_argument("--typs", nargs="?", default="pce-grad", type=str)
     parser.add_argument("--seed", nargs="?", default=-1, type=int)
@@ -248,7 +225,19 @@ if __name__ == "__main__":
     parser.add_argument("-n", default=2, type=int)
     parser.add_argument("-p", default=6, type=int)
     parser.add_argument("--scale", default=1., type=float)
+    parser.add_argument("--num-data", default=3000, type=int)
     args = parser.parse_args()
-    main(args.num_steps, args.num_parallel, args.name, args.typs, args.seed,
-         args.num_gradient_steps, args.num_samples, args.num_contrast_samples,
-         args.loglevel, args.n, args.p, args.scale)
+    if args.num_data != 1:
+        message = str(args).replace(", ", "\n")
+        output_msg = "./run_outputs/regression_rollout/" + args.name
+        f = open(output_msg+".txt", "w+")
+        f.write(message)
+        f.close()
+        for i in range(args.num_data):
+            main(args.num_steps, args.num_parallel, str(i)+args.name, args.typs, args.seed,
+                 args.num_gradient_steps, args.num_samples, args.num_contrast_samples,
+                 args.loglevel, args.n, args.p, args.scale)
+    else:
+        main(args.num_steps, args.num_parallel, args.name, args.typs, args.seed,
+             args.num_gradient_steps, args.num_samples, args.num_contrast_samples,
+             args.loglevel, args.n, args.p, args.scale)
