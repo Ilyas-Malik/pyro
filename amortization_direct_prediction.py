@@ -95,7 +95,7 @@ def train(model, batch_size, learn_rate=.001, EPOCHS=5, counter_write = 50, ytra
             if model.counter % counter_write == 0:
                 batch_loss.append(loss)
                 writer.add_scalar('Loss/Train/Batch', loss, model.counter)
-                print("Epoch {}...Step: {}... Batch Loss: {}".format(epoch, model.counter, loss))
+#                print("Epoch {}...Step: {}... Batch Loss: {}".format(epoch, model.counter, loss))
         current_time = time.clock()
         train_h = model.init_hidden(n_train)
         train_out, _ = model(ytrain.to(device).float(), train_h)
@@ -151,7 +151,8 @@ num_layers = 1
 
 batch_size = 50
 lr = .003
-EPOCHS = 10
+EPOCHS = 15
+val_prop = .2
 drop = 0
 counter_write = 30
 
@@ -160,16 +161,29 @@ layers_list = [1,2]
 batch_list = [2**i for i in range(1,6)]
 lr_list = [.0001*4**i for i in range(5)]
 
+i_val = int(val_prop*n_data)
+permutation = torch.randperm(n_data)
+val_ind = permutation[:i_val]
+train_ind = permutation[i_val:]
+yval = ys[val_ind]
+dval = ds[val_ind]
+
+ytrain = ys[train_ind]
+dtrain = ds[train_ind]
+
+num_experiment = 1
 
 for hidden_dim, num_layers, batch_size, lr in list(
         itertools.product(hidden_list, layers_list, batch_list,lr_list)):
+    print(num_experiment)
     writer_dir = "LR{} B{} L{} H{} T{}".format(lr, batch_size, num_layers, hidden_dim,
                                                int(time.time()) % 10000)
     model = GRUNet(input_dim, output_dim, hidden_dim, num_layers, drop, writer_dir)
-    epoch_loss, epoch_times, batch_loss = train(model, batch_size, lr, EPOCHS, counter_write)
+    epoch_loss, epoch_times, batch_loss = train(model, batch_size, lr, EPOCHS, counter_write,
+                                                ytrain, dtrain, yval, dval)
     print(hidden_dim, num_layers, batch_size, lr)
-
-
+    print("NUM EXPERIMENT ####################################", num_experiment)
+    num_experiment += 1
 
 
 
