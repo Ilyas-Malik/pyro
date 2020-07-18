@@ -14,7 +14,6 @@ from tqdm import tqdm_notebook
 
 # Define data root directory
 name = "custom prior less steps" # To change to match data
-data_chunks = 745 # Number of chunks of data, to change, put as arg at the end
 
 data_dir = "./run_outputs/regression_rollout/"
 data_file = name + ".result_stream.pickle"
@@ -74,6 +73,7 @@ def train(model, batch_size, learn_rate=.001, EPOCHS=5, counter_write = 50, ytra
     epoch_times = []
     epoch_loss = []
     batch_loss = []
+    total_val_loss = []
     # Start training loop
     s_epoch = model.s_epoch
     for epoch in range(s_epoch, EPOCHS + s_epoch):
@@ -95,7 +95,7 @@ def train(model, batch_size, learn_rate=.001, EPOCHS=5, counter_write = 50, ytra
             if model.counter % counter_write == 0:
                 batch_loss.append(loss)
                 writer.add_scalar('Loss/Train/Batch', loss, model.counter)
-                print("Epoch {}...Step: {}... Batch Loss: {}".format(epoch, model.counter, loss))
+#                print("Epoch {}...Step: {}... Batch Loss: {}".format(epoch, model.counter, loss))
         current_time = time.clock()
         train_h = model.init_hidden(n_train)
         train_out, _ = model(ytrain.to(device).float(), train_h)
@@ -108,13 +108,14 @@ def train(model, batch_size, learn_rate=.001, EPOCHS=5, counter_write = 50, ytra
             val_out, _ = model(yval.to(device).float(), val_h)
             val_loss = criterion(val_out, dval.to(device).float())
             writer.add_scalar('Loss/Val/Total', val_loss, epoch)
+            total_val_loss.append(val_loss)
         print("Total Time Elapsed: {:.3f} seconds".format(current_time - start_time))
         epoch_times.append(current_time - start_time)
         writer.add_scalar('Time_per_epoch', current_time - start_time, epoch)
         model.s_epoch += 1
     print("Total Training Time: {:.3f} seconds".format(sum(epoch_times)))
     writer.close()
-    return epoch_loss, epoch_times, batch_loss
+    return epoch_loss, epoch_times, batch_loss, total_val_loss
 
 
 def evaluate(model, test_x, test_y, label_scalers):
@@ -151,27 +152,38 @@ num_layers = 1
 
 batch_size = 50
 lr = .003
-EPOCHS = 10
+EPOCHS = 20
+val_prop = .2
 drop = 0
 counter_write = 30
 
-hidden_list = [2**i for i in range(4,10)]
+hidden_list = [16, 64, 256]
 layers_list = [1,2]
-batch_list = [2**i for i in range(1,6)]
-lr_list = [.0001*4**i for i in range(5)]
+batch_list = [8, 16]
+lr_list = [.0001*5**i for i in range(4)]
+
+i_val = int(val_prop*n_data)
+permutation = torch.randperm(n_data)
+val_ind = permutation[:i_val]
+train_ind = permutation[i_val:]
+yval = ys[val_ind]
+dval = ds[val_ind]
+
+ytrain = ys[train_ind]
+dtrain = ds[train_ind]
 
 
-for hidden_dim, num_layers, batch_size, lr in list(
-        itertools.product(hidden_list, layers_list, batch_list,lr_list)):
+for num_experiment, (hidden_dim, num_layers, batch_size, lr) in enumerate(list(
+        itertools.product(hidden_list, layers_list, batch_list,lr_list))):
+    print("NUM EXPERIMENT ####################################", num_experiment)
     writer_dir = "LR{} B{} L{} H{} T{}".format(lr, batch_size, num_layers, hidden_dim,
                                                int(time.time()) % 10000)
     model = GRUNet(input_dim, output_dim, hidden_dim, num_layers, drop, writer_dir)
-    epoch_loss, epoch_times, batch_loss = train(model, batch_size, lr, EPOCHS, counter_write)
+
+    epoch_loss, epoch_times, batch_loss, total_val_loss =\
+        train(model, batch_size, lr, EPOCHS, counter_write, ytrain, dtrain, yval, dval)
+
     print(hidden_dim, num_layers, batch_size, lr)
-
-
-
-
 
 
 
