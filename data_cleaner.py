@@ -37,8 +37,6 @@ def main(name, data_chunks, remove):
     n_data, seq_len, n, p = ds.shape
     ys = ys.reshape(n_data, seq_len, -1)
     ds = ds.reshape(n_data, seq_len, -1)
-    input_dim = n
-    output_dim = n*p
     # ys and ds are inputs and outputs
 
     with open(data_dir + 'ys' + data_file, 'ab') as f:
