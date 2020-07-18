@@ -1,6 +1,6 @@
 import os
 import time
-
+from tensorboardX import SummaryWriter
 import numpy as np
 import pandas as pd
 
@@ -13,36 +13,23 @@ from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm_notebook
 
 # Define data root directory
-name = "" # To change to match data
-data_chunks = 2 # Number of chunks of data, to change, put as arg at the end
+name = "custom prior less steps" # To change to match data
+data_chunks = 745 # Number of chunks of data, to change, put as arg at the end
 
 data_dir = "./run_outputs/regression_rollout/"
 data_file = name + ".result_stream.pickle"
 
 #### Creating the Dataset
 
-
-for i in range(data_chunks):
-    datum = data_dir + str(i) + data_file
-    with open(datum, 'rb') as f:
-        res = pickle.load(f)
-    if i == 0:
-        ys = torch.stack(res["y"])
-        ds = torch.stack(res["d_star_design"])
-        seq_len = len(res['step'])
-        continue
-    assert len(res['step'])>=seq_len
-    y = torch.stack(res["y"])
-    d = torch.stack(res["d_star_design"])
-    ys = torch.cat((ys,y), 1)
-    ds = torch.cat((ds,d), 1)
-ys.transpose_(0,1)
-ds.transpose_(0,1)
-n_data, seq_len, n, p = ds.shape
-ys = ys.reshape(n_data, seq_len, -1)
-ds = ds.reshape(n_data, seq_len, -1)
+with open(data_dir + 'ys' + data_file, 'rb') as f:
+    ys = pickle.load(f)
+with open(data_dir + 'ds' + data_file, 'rb') as f:
+    ds = pickle.load(f)
+n_data, seq_len, n = ys.shape
+output_dim = ds.shape[-1]
 input_dim = n
-output_dim = n*p
+p = output_dim//n
+
 # ys and ds are inputs and outputs
 
 class GRUNet(nn.Module):
@@ -55,6 +42,7 @@ class GRUNet(nn.Module):
         self.relu = nn.ReLU()
         self.fc = nn.Linear(hidden_dim, output_dim)
 
+        self.writer = SummaryWriter(f"./run_outputs/regression_board/{int(time.time())}")
     def init_hidden(self, batch_size):
         weight = next(self.parameters()).data
         hidden = weight.new(self.n_layers, batch_size, self.hidden_dim).zero_().to(device)
@@ -84,6 +72,8 @@ def train(model, batch_size, learn_rate=.001, EPOCHS=5):
         permutation = torch.randperm(n_data)
         start_time = time.clock()
         for i in range(0, n_data, batch_size):
+            if i+batch_size > n_data:
+                continue
             h = model.init_hidden(batch_size)
             indices = permutation[i:i + batch_size]
             y_batch = ys[indices]
@@ -136,15 +126,15 @@ if is_cuda:
 else:
     device = torch.device("cpu")
 
+#b20 l27.7 b10 l26.7 b5 l26.2 with 2 layers: b10 l20.3
+batch_size = 10
+lr = .001
+EPOCHS = 20
 
-batch_size = 4
-
-
-model = GRUNet(input_dim, 256, output_dim, 1, 0)
+model = GRUNet(input_dim, 256, output_dim, 2, 0)
 print(next(model.parameters()))
-epoch_loss, epoch_times, batch_loss = train(model, batch_size)
+epoch_loss, epoch_times, batch_loss = train(model, batch_size, lr, EPOCHS)
 print(next(model.parameters()))
-
 
 
 
