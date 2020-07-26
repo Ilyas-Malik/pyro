@@ -146,7 +146,7 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, num_gradient_step
         results = {'typ': typ, 'step': [], 'git-hash': get_git_revision_hash(), 'seed': seed,
                    'num_gradient_steps': num_gradient_steps, 'num_samples': num_samples,
                    'num_contrast_samples': num_contrast_samples, 'design_time': [], 'd_star_design': [],
-                   'y': [], 'w_loc': [], 'w_scale': [], 'sigma_scale': []}
+                   'y': [], 'w_loc': [], 'w_scale': [], 'sigma_scale': [], 'ape': []}
 
         for step in range(num_steps):
             logging.info("Step {}".format(step))
@@ -184,6 +184,7 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, num_gradient_step
 
             elapsed = time.time() - t
             logging.info('elapsed design time {}'.format(elapsed))
+            results['ape'].append(ape)
             results['design_time'].append(elapsed)
             results['d_star_design'].append(d_star_design)
             logging.info('design {} {}'.format(d_star_design.squeeze(), d_star_design.shape))

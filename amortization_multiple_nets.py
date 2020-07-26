@@ -7,6 +7,7 @@ import itertools
 import torch
 import torch.nn as nn
 import pickle
+import torch.nn.functional as F
 
 from torch.utils.data import TensorDataset, DataLoader
 
@@ -31,44 +32,34 @@ p = output_dim//n
 
 # ys and ds are inputs and outputs
 
-class GRUNet(nn.Module):
-    def __init__(self, input_dim, output_dim, hidden_dim, n_layers, drop_prob=.0,
-                 writer_dir = f"{int(time.time())}"):
-        super(GRUNet, self).__init__()
-        self.hidden_dim = hidden_dim
-        self.n_layers = n_layers
+class Net(nn.Module):
 
-        self.gru = nn.GRU(input_dim, hidden_dim, n_layers, batch_first=True, dropout=drop_prob)
-        self.relu = nn.ReLU()
-        self.fc = nn.Linear(hidden_dim, output_dim)
+    def __init__(self, input_dim, output_dim, hidden_dim, writer_dir):
+        super(Net, self).__init__()
+
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, output_dim)
         self.counter = 0
         self.s_epoch = 1
         self.writer = SummaryWriter("./run_outputs/regression_board/" + writer_dir)
-    def init_hidden(self, batch_size):
-        weight = next(self.parameters()).data
-        hidden = weight.new(self.n_layers, batch_size, self.hidden_dim).zero_().to(device)
-        return hidden
 
-    def forward(self, x, h):
-        assert len(x.size()) == 3, '[GRU]: Input dimension must be of length 3 i.e. [MxSxN]' # M: Batch Size(if batch first), S: Seq Lenght, N: Number of features
-        out, h = self.gru(x, h)
-        out = self.fc(self.relu(out))
-        return out, h
+    def forward(self, x):
+        # Max pooling over a (2, 2) window
+        x = F.relu(self.fc1(x))
+        # If the size is a square you can only specify a single number
+        x = F.relu(self.fc2(x))
+        return x
 
 
 def train(model, batch_size, learn_rate=.001, EPOCHS=5, counter_write = 50, ytrain = ys, dtrain = ds,
-          yval = None, dval = None, loss_ind_train = None, loss_ind_val = None):
+          yval = None, dval = None):
     validate = (yval != None)
     # Defining loss function and optimizer
     n_train = ytrain.shape[0]
     if validate:
-        if loss_ind_val != None:
-            dval = dval[:, loss_ind_val, :]
         n_val = yval.shape[0]
         assert n_train == dtrain.shape[0] and n_val == dval.shape[0],\
             'Sizes of inputs and outputs must match'
-    if loss_ind_train != None:
-        dtrain = dtrain[:,loss_ind_train,:]
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learn_rate)
     writer = model.writer
@@ -86,15 +77,14 @@ def train(model, batch_size, learn_rate=.001, EPOCHS=5, counter_write = 50, ytra
         for i in range(0, n_train, batch_size):
             if i+batch_size > n_train:
                 continue
-            h = model.init_hidden(batch_size)
             indices = permutation[i:i + batch_size]
             y_batch = ytrain[indices]
             d_batch = dtrain[indices]
             model.counter += 1
             model.zero_grad()
-            out, _ = model(y_batch.to(device).float(), h)
-            if loss_ind_train != None:
-                out = out[:,loss_ind_train,:]
+            if epoch ==1 and i==0:
+                print("y", y_batch.shape, "d", d_batch.shape)
+            out = model(y_batch.to(device).float())
             loss = criterion(out, d_batch.to(device).float())
             loss.backward()
             optimizer.step()
@@ -103,18 +93,14 @@ def train(model, batch_size, learn_rate=.001, EPOCHS=5, counter_write = 50, ytra
                 writer.add_scalar('Loss/Train/Batch', loss, model.counter)
 #                print("Epoch {}...Step: {}... Batch Loss: {}".format(epoch, model.counter, loss))
         current_time = time.clock()
-        train_h = model.init_hidden(n_train)
-        train_out, _ = model(ytrain.to(device).float(), train_h)
+        train_out = model(ytrain.to(device).float())
         train_loss = criterion(train_out, dtrain.to(device).float())
         writer.add_scalar('Loss/Train/Total', train_loss, epoch)
         print("Epoch {}/{} Done, Total Loss: {:.5f}".format(epoch, EPOCHS, train_loss))
         epoch_loss.append(train_loss)
         if validate:
             with torch.no_grad():
-                val_h = model.init_hidden(n_val)
-                val_out, _ = model(yval.to(device).float(), val_h)
-                if loss_ind_val != None:
-                    val_out = val_out[:,loss_ind_val,:]
+                val_out = model(yval.to(device).float())
                 val_loss = criterion(val_out, dval.to(device).float()).item()
                 writer.add_scalar('Loss/Val/Total', val_loss, epoch)
                 total_val_loss.append(val_loss)
@@ -128,18 +114,6 @@ def train(model, batch_size, learn_rate=.001, EPOCHS=5, counter_write = 50, ytra
     writer.close()
     return epoch_loss, epoch_times, batch_loss, total_val_loss
 
-
-def evaluate(model, ytest, dtest):
-    model.eval()
-    criterion = nn.MSELoss()
-    n = ytest.shape[0]
-    h = model.init_hidden(n)
-    out, _ = model(ytest.to(device).float(), h)
-    loss = criterion(out, dtest.to(device).float()).item()
-    print("Loss: {}%".format(loss))
-    return loss
-
-
 is_cuda = torch.cuda.is_available()
 
 if is_cuda:
@@ -152,22 +126,16 @@ hidden_dim = 32
 num_layers = 2
 
 batch_size = 16
-lr = .001
-EPOCHS = 20
+lr = .005
+EPOCHS = 40
 drop = 0
 counter_write = 30
 
 val_prop = .15
 test_prop = .0
 
-hidden_list = [16, 64, 256]
-layers_list = [1,2]
-batch_list = [8, 16]
-lr_list = [.0001*5**i for i in range(4)]
-
 i_test = int(test_prop*n_data)
 i_val = int((val_prop+test_prop)*n_data)
-
 
 permutation = torch.randperm(n_data)
 test_ind = permutation[:i_test]
@@ -177,32 +145,35 @@ train_ind = permutation[i_val:]
 ytest, dtest = ys[test_ind], ds[test_ind]
 yval, dval = ys[val_ind], ds[val_ind]
 ytrain, dtrain = ys[train_ind], ds[train_ind]
+ntrain, nval, ntest = ytrain.shape[0], yval.shape[0], ytest.shape[0]
 
-######## Monitoring the loss at each time step by training the whole GRU
-
-# for i in range(seq_len):
-#     torch.manual_seed(672)
-#     writer_dir = "GRU{} LR{} B{} L{} H{} T{}".format(i+1, lr, batch_size, num_layers, hidden_dim,
-#                                                int(time.time()) % 10000)
-#     model = GRUNet(input_dim, output_dim, hidden_dim, num_layers, drop, writer_dir)
-#     epoch_loss, epoch_times, batch_loss, total_val_loss = \
-#         train(model, batch_size, lr, EPOCHS, counter_write, ytrain, dtrain, yval, dval,
-#               loss_ind_train=None, loss_ind_val=i)
-
-
-
-######## Training the GRU on the optimal hyperparameters
-
-writer_dir = "LR{} B{} L{} H{} T{} temp".format(lr, batch_size, num_layers, hidden_dim,
+writer = "LR{} B{} L{} H{} T{}".format(lr, batch_size, num_layers, hidden_dim,
                                            int(time.time()) % 10000)
-model = GRUNet(input_dim, output_dim, hidden_dim, num_layers, drop, writer_dir)
-epoch_loss, epoch_times, batch_loss, total_val_loss = \
-    train(model, batch_size, lr, EPOCHS, counter_write, ytrain, dtrain, yval, dval,
-          loss_ind_train=None, loss_ind_val=None)
 
+writers = ["MN"+str(i)+" "+writer for i in range(1, seq_len+1)]
 
-######## Training on a multidimensional hyperparameter grid
+nets = [Net(input_dim*i, output_dim, hidden_dim, writer_dir)
+        for i, writer_dir in zip(range(1, seq_len+1), writers)]
 
+epoch_loss, total_val_loss = [], []
+for i, model in enumerate(nets):
+    print("TRAINING ########", i)
+    ytrain_loc = ytrain[:,:(i+1),].reshape(ntrain, -1)
+    dtrain_loc = dtrain[:,i,]
+    yval_loc = yval[:,:(i+1),].reshape(nval, -1)
+    dval_loc = dval[:,i,]
+    if test_prop != 0:
+        ytest_loc = ytest[:,:(i+1),]
+        dtest_loc = dtest[:,[i],]
+    loc_epoch_loss, _, _, loc_total_val_loss = \
+        train(model, batch_size, lr, EPOCHS, counter_write,
+              ytrain_loc, dtrain_loc, yval_loc, dval_loc)
+    epoch_loss.append(loc_epoch_loss)
+    total_val_loss.append(loc_total_val_loss)
+    if test_prop != 0:
+        pass
+
+#
 # for num_experiment, (hidden_dim, num_layers, batch_size, lr) in enumerate(list(
 #         itertools.product(hidden_list, layers_list, batch_list,lr_list))):
 #     print("NUM EXPERIMENT ####################################", num_experiment)
