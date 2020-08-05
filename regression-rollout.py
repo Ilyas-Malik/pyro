@@ -33,7 +33,7 @@ def get_git_revision_hash():
 #Creates model with predefined fixed theta (w and sigma), outputs y as a regression outcome
 def make_regression_model(w_loc, w_scale, sigma_scale, observation_label="y"):
     def regression_model(design):
-
+        design = (design / design.norm(dim=-1, p=1, keepdim=True)).expand(design.shape)
         if is_bad(design):
             raise ArithmeticError("bad design, contains nan or inf")
         batch_shape = design.shape[:-2]
@@ -119,13 +119,9 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, num_gradient_step
         w_scale = scale * torch.ones(p)
         sigma_scale = scale * torch.tensor(1.)
 
-        true_w_cov =  torch.tensor([[1., 0., .5, 0., 0., 0.],
-                                    [0., 3., 0., 0., 0., -1.],
-                                    [.5, 0., 1., 0., 0., 0.],
-                                    [0., 0., 0., .2, 0., 0.],
-                                    [0., 0., 0., 0., 1., 0.],
-                                    [0., -1., 0., 0., 0., 5.]])
-        true_w_loc = torch.tensor([0.,2.,-3.,4.,5.,6.])
+        true_w_cov =  torch.tensor([[1., .2],
+                                    [.2, 2.]])
+        true_w_loc = torch.tensor([.5,-.5])
         true_w = torch.distributions.multivariate_normal.MultivariateNormal(true_w_loc,
                                                                             true_w_cov).sample()
         true_sigma_scale = .9
@@ -157,7 +153,7 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, num_gradient_step
             results['step'].append(step)
             if typ in ['posterior-grad', 'pce-grad', 'ace-grad']:
                 model_learn_xi = make_learn_xi_model(model)
-                grad_start_lr, grad_end_lr = 0.001, 0.001
+                grad_start_lr, grad_end_lr = 0.05, 0.001
 
                 if typ == 'pce-grad':
 
@@ -168,6 +164,8 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, num_gradient_step
                     loss = neg_loss(eig_loss)
 
                 xi_init = 20 * torch.rand((num_parallel, n, p)) - 10
+                xi_init = (xi_init / xi_init.norm(dim=-1, p=1, keepdim=True)).expand(xi_init.shape)
+                print("########## XI INIT", xi_init)
                 pyro.param("xi", xi_init)
                 pyro.get_param_store().replace_param("xi", xi_init, pyro.param("xi"))
                 design_prototype = torch.zeros((num_parallel, n, p))  # this is annoying, code needs refactor
@@ -176,11 +174,10 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, num_gradient_step
                 gamma = (end_lr / start_lr) ** (1 / num_gradient_steps)
                 scheduler = pyro.optim.ExponentialLR({'optimizer': torch.optim.Adam, 'optim_args': {'lr': start_lr},
                                                       'gamma': gamma})
-                print(design_prototype.shape)
                 ape = opt_eig_ape_loss(design_prototype, loss, num_samples=num_samples, num_steps=num_gradient_steps,
                                        optim=scheduler, final_num_samples=500)
                 d_star_design = pyro.param("xi").detach().clone()
-                print(d_star_design.shape)
+                print("########## d_star", d_star_design)
 
             elapsed = time.time() - t
             logging.info('elapsed design time {}'.format(elapsed))
@@ -214,7 +211,7 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, num_gradient_step
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Regression rollouts"
                                                  " iterated experiment design")
-    parser.add_argument("--num-steps", nargs="?", default=20, type=int) #num iterations
+    parser.add_argument("--num-steps", nargs="?", default=2, type=int) #num iterations
     parser.add_argument("--num-parallel", nargs="?", default=2, type=int) #batch size
     parser.add_argument("--name", nargs="?", default="", type=str)
     parser.add_argument("--typs", nargs="?", default="pce-grad", type=str)
@@ -223,10 +220,10 @@ if __name__ == "__main__":
     parser.add_argument("--num-gradient-steps", default=1000, type=int) #gradient for convergence of svi to have good variational parameters and
     parser.add_argument("--num-samples", default=10, type=int)
     parser.add_argument("--num-contrast-samples", default=10, type=int)
-    parser.add_argument("-n", default=2, type=int)
-    parser.add_argument("-p", default=6, type=int)
+    parser.add_argument("-n", default=1, type=int)
+    parser.add_argument("-p", default=2, type=int)
     parser.add_argument("--scale", default=1., type=float)
-    parser.add_argument("--num-data", default=3000, type=int)
+    parser.add_argument("--num-data", default=10, type=int)
     args = parser.parse_args()
     if args.num_data != 1:
         message = str(args).replace(", ", "\n")
