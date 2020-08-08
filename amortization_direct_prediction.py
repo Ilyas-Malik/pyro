@@ -13,8 +13,8 @@ from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm_notebook
 
 # Define data root directory
-name = "custom prior less steps" # To change to match data
-
+#name = "custom prior less steps" # To change to match data
+name = "normalisedfinall"
 data_dir = "./run_outputs/regression_rollout/"
 data_file = name + ".result_stream.pickle"
 
@@ -24,11 +24,14 @@ with open(data_dir + 'ys' + data_file, 'rb') as f:
     ys = pickle.load(f)
 with open(data_dir + 'ds' + data_file, 'rb') as f:
     ds = pickle.load(f)
+ds = (ds / ds.norm(dim=-1, p=1, keepdim=True)).expand(ds.shape)
 n_data, seq_len, n = ys.shape
 output_dim = ds.shape[-1]
-input_dim = n
 p = output_dim//n
-
+dtemp = ds[:,:(seq_len-1),:]
+ytemp = ys[:,:(seq_len-1),:]
+in_yds = torch.cat((ytemp, dtemp), 2)
+out_ds = ds[:,1:,:]
 # ys and ds are inputs and outputs
 
 class GRUNet(nn.Module):
@@ -149,13 +152,14 @@ else:
 
 #b20 l27.7 b10 l26.7 b5 l26.2 with 2 layers: b10 l20.3
 hidden_dim = 32
-num_layers = 2
+num_layers = 1
 
 batch_size = 16
-lr = .001
+lr = .01
 EPOCHS = 20
 drop = 0
 counter_write = 30
+input_dim = n + n*p     # was just n
 
 val_prop = .15
 test_prop = .0
@@ -174,9 +178,10 @@ test_ind = permutation[:i_test]
 val_ind = permutation[i_test:i_val]
 train_ind = permutation[i_val:]
 
-ytest, dtest = ys[test_ind], ds[test_ind]
-yval, dval = ys[val_ind], ds[val_ind]
-ytrain, dtrain = ys[train_ind], ds[train_ind]
+
+in_test, out_test = in_yds[test_ind], out_ds[test_ind]
+in_val, out_val = in_yds[val_ind], out_ds[val_ind]
+in_train, out_train = in_yds[train_ind], out_ds[train_ind]
 
 ######## Monitoring the loss at each time step by training the whole GRU
 
@@ -193,11 +198,11 @@ ytrain, dtrain = ys[train_ind], ds[train_ind]
 
 ######## Training the GRU on the optimal hyperparameters
 
-writer_dir = "LR{} B{} L{} H{} T{} temp".format(lr, batch_size, num_layers, hidden_dim,
+writer_dir = "LR{} B{} L{} H{} T{} design_outcome".format(lr, batch_size, num_layers, hidden_dim,
                                            int(time.time()) % 10000)
 model = GRUNet(input_dim, output_dim, hidden_dim, num_layers, drop, writer_dir)
 epoch_loss, epoch_times, batch_loss, total_val_loss = \
-    train(model, batch_size, lr, EPOCHS, counter_write, ytrain, dtrain, yval, dval,
+    train(model, batch_size, lr, EPOCHS, counter_write, in_train, out_train, in_val, out_val,
           loss_ind_train=None, loss_ind_val=None)
 
 
@@ -216,6 +221,7 @@ epoch_loss, epoch_times, batch_loss, total_val_loss = \
 #     print(hidden_dim, num_layers, batch_size, lr)
 #     if num_experiment > 3:
 #         break
+
 
 
 

@@ -12,7 +12,7 @@ from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm_notebook
 
 # Define data root directory
-name = "custom prior less steps" # To change to match data
+name = "normalisedfinall" # To change to match data
 
 data_dir = "./run_outputs/regression_rollout/"
 data_file = name + ".result_stream.pickle"
@@ -27,3 +27,4 @@ n_data, seq_len, n = ys.shape
 output_dim = ds.shape[-1]
 input_dim = n
 p = output_dim//n
+ds = (ds / ds.norm(dim=-1, p=1, keepdim=True)).expand(ds.shape)
