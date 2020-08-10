@@ -25,11 +25,15 @@ def get_git_revision_hash():
 def make_regression_model(w_loc, w_scale, sigma_scale, design_net, observation_prefix="y"):
     def regression_model(design_prototype):
         batch_shape = design_prototype.shape[:-2]
+        pyro.module('design_net', design_net)
         with pyro.plate_stack("plate_stack", batch_shape):
             ###################################################################################################
             # Get xi1
             ###################################################################################################
-            xi1 = torch.tensor([1, 0]).to(design_prototype.device).expand(design_prototype.shape)
+            xi1 = torch.randint(2, design_prototype.shape, dtype=torch.float,
+                                device=design_prototype.device)
+            xi1[..., 1] = 1 - xi1[..., 0]
+            xi1 = xi1 / xi1.norm(p=1, dim=-1, keepdim=True)
 
             ###################################################################################################
             # Sample theta
@@ -50,6 +54,7 @@ def make_regression_model(w_loc, w_scale, sigma_scale, design_net, observation_p
             # Get xi2
             ###################################################################################################
             xi2 = design_net(y1, xi1)
+            xi2 = xi2 / xi2.norm(p=1, dim=-1, keepdim=True)
 
             ###################################################################################################
             # Sample y2
@@ -89,11 +94,13 @@ class TensorLinear(nn.Module):
         return rmv(self.weight, input) + self.bias
 
 
-class DesignNetwork:
+class DesignNetwork(nn.Module):
 
-    def __init__(self, y_dim, xi_dim, batching):
+    def __init__(self, y_dim, xi_dims, batching):
         super(DesignNetwork, self).__init__()
         n_hidden = 128
+        xi_dim = xi_dims[0] * xi_dims[1]
+        self.xi_dims = xi_dims
         self.linear1 = TensorLinear(*batching, y_dim + xi_dim, n_hidden)
         # self.linear2 = TensorLinear(*batching, n_hidden, n_hidden)
         self.output_layer = TensorLinear(*batching, n_hidden, xi_dim)
@@ -101,10 +108,12 @@ class DesignNetwork:
 
     # Maps (y1, xi1) to xi2
     def forward(self, y1, xi1):
+        xi1 = xi1.flatten(-2)
         inputs = torch.cat([y1, xi1], dim=-1)
         x = self.linear1(inputs)
         x = self.relu(x)
         x = self.output_layer(x)
+        x = x.reshape(x.shape[:-1] + self.xi_dims)
         return x
 
 
@@ -137,7 +146,6 @@ def opt_eig_loss_w_history(design, loss_fn, num_samples, num_steps, optim, time_
         wall_times.append(time.time() - t)
         optim(params)
         optim.step()
-        print(pyro.param("xi")[0, 0, ...])
         print(step)
         print('eig', baseline.squeeze())
         if time_budget and time.time() - t > time_budget:
@@ -177,7 +185,7 @@ def main(num_steps, num_samples, time_budget, experiment_name, estimators, seed,
         w_prior_scale = scale * torch.ones(p, device=device)
         sigma_prior_scale = scale * torch.tensor(1., device=device)
 
-        design_net = DesignNetwork(n, p, (num_parallel,)).to(device)
+        design_net = DesignNetwork(n, (n, p), (num_parallel,)).to(device)
 
         model_learn_net = make_regression_model(
             w_prior_loc, w_prior_scale, sigma_prior_scale, design_net)
@@ -223,13 +231,13 @@ if __name__ == "__main__":
     parser.add_argument("--num-samples", default=10, type=int)
     parser.add_argument("--num-parallel", default=10, type=int)
     parser.add_argument("--name", default="", type=str)
-    parser.add_argument("--estimator", default="posterior", type=str)
+    parser.add_argument("--estimator", default="pce", type=str)
     parser.add_argument("--seed", default=-1, type=int)
     parser.add_argument("--start-lr", default=0.001, type=float)
     parser.add_argument("--end-lr", default=0.001, type=float)
     parser.add_argument("--device", default="cuda:0", type=str)
-    parser.add_argument("-n", default=20, type=int)
-    parser.add_argument("-p", default=20, type=int)
+    parser.add_argument("-n", default=1, type=int)
+    parser.add_argument("-p", default=2, type=int)
     parser.add_argument("--scale", default=1., type=float)
     args = parser.parse_args()
     main(args.num_steps, args.num_samples, args.time_budget, args.name, args.estimator, args.seed, args.num_parallel,

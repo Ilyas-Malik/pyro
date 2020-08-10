@@ -292,7 +292,7 @@ def pce_eig(model, design, observation_labels, target_labels=None, N=100, M=10, 
     conditional_model = pyro.condition(model, data=y_dict)
     # Using (M, 1) instead of (M, N) - acceptable to re-use thetas between ys because
     # theta comes before y in graphical model
-    reexpanded_design = lexpand(design, M, 1)  # sample M theta
+    reexpanded_design = lexpand(design, M, N)  # sample M theta
     retrace = poutine.trace(conditional_model).get_trace(reexpanded_design)
     retrace.compute_log_prob()
     marginal_log_probs = torch.cat([lexpand(conditional_lp, 1),
