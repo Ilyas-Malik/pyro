@@ -4,10 +4,11 @@ import pickle
 import argparse
 
 #name = "“eigtest”"
-name = "normalised3"
+name = "n1p2rollout"
 data_dir = "./run_outputs/regression_rollout/"
 data_file = name + ".result_stream.pickle"
-data_chunks = 3
+data_chunks = 10
+
 
 for i in range(data_chunks):
     datum = data_dir + str(i) + data_file
@@ -31,3 +32,5 @@ ds.transpose_(0, 1)
 n_data, seq_len, n, p = ds.shape
 ys = ys.reshape(n_data, seq_len, -1)
 ds = ds.reshape(n_data, seq_len, -1)
+
+

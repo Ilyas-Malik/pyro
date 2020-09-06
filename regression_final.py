@@ -8,6 +8,7 @@ import time
 import torch
 from torch import nn
 from torch.distributions import constraints
+from tensorboardX import SummaryWriter
 
 import pyro
 import pyro.distributions as dist
@@ -22,7 +23,7 @@ def get_git_revision_hash():
     return subprocess.check_output(['git', 'rev-parse', 'HEAD'])
 
 
-def make_regression_model(w_loc, w_scale, sigma_scale, design_net, observation_prefix="y"):
+def make_regression_model(w_loc, w_scale, sigma_scale, design_net, num_iter, observation_prefix="y"):
     def regression_model(design_prototype):
         batch_shape = design_prototype.shape[:-2]
         pyro.module('design_net', design_net)
@@ -30,11 +31,10 @@ def make_regression_model(w_loc, w_scale, sigma_scale, design_net, observation_p
             ###################################################################################################
             # Get xi1
             ###################################################################################################
-            xi1 = torch.randint(2, design_prototype.shape, dtype=torch.float,
+            xi = torch.randint(2, design_prototype.shape, dtype=torch.float,
                                 device=design_prototype.device)
-            xi1[..., 1] = 1 - xi1[..., 0]
-            xi1 = xi1 / xi1.norm(p=1, dim=-1, keepdim=True)
-
+            xi[..., 1] = 1 - xi[..., 0]
+            xi = xi / xi.norm(p=1, dim=-1, keepdim=True)
             ###################################################################################################
             # Sample theta
             ###################################################################################################
@@ -42,29 +42,32 @@ def make_regression_model(w_loc, w_scale, sigma_scale, design_net, observation_p
             w = pyro.sample("w", dist.Laplace(w_loc, w_scale).to_event(1))
             # `sigma` is scalar
             sigma = 1e-6 + pyro.sample("sigma", dist.Exponential(sigma_scale)).unsqueeze(-1)
+            y=[]
+            xis = [xi]
+            for i in range(num_iter):
 
-            ###################################################################################################
-            # Sample y1
-            ###################################################################################################
-            mean1 = rmv(xi1, w)
-            sd = sigma
-            y1 = pyro.sample(observation_prefix + '1', dist.Normal(mean1, sd).to_event(1))
+                ###############################################################################################
+                # Sample y_i
+                ###############################################################################################
+                mean = rmv(xi, w)
+                sd = sigma
+                y.append(pyro.sample(observation_prefix + str(i+1), dist.Normal(mean, sd).to_event(1)))
 
-            ###################################################################################################
-            # Get xi2
-            ###################################################################################################
-            print(y1.shape, xi1.shape)
-            xi2 = design_net(y1, xi1)
-            xi2 = xi2 / xi2.norm(p=1, dim=-1, keepdim=True)
-
+                ###############################################################################################
+                # Get xi2
+                ###############################################################################################
+                print(y[i].shape, xi.shape)
+                xi, h = design_net(y[i], xi)
+                xi = xi / xi.norm(p=1, dim=-1, keepdim=True)
+                xis.append(xi)
             ###################################################################################################
             # Sample y2
             ###################################################################################################
-            mean2 = rmv(xi2, w)
+            mean = rmv(xi, w)
             sd = sigma
-            y2 = pyro.sample(observation_prefix + '2', dist.Normal(mean2, sd).to_event(1))
+            y.append(pyro.sample(observation_prefix + str(i+1), dist.Normal(mean, sd).to_event(1)))
 
-            return y1, y2
+            return y
 
     return regression_model
 
@@ -95,6 +98,35 @@ class TensorLinear(nn.Module):
         return rmv(self.weight, input) + self.bias
 
 
+class GRUNet(nn.Module):
+    def __init__(self, y_dim, xi_dims, batching, hidden_dim, n_layers, drop_prob=.0,
+                 writer_dir = f"{int(time.time())}"):
+        super(GRUNet, self).__init__()
+        self.hidden_dim = hidden_dim
+        self.n_layers = n_layers
+        xi_dim = xi_dims * xi_dims
+        self.xi_dims = xi_dims
+
+        self.gru = nn.GRU(y_dim + xi_dim, hidden_dim, n_layers, batch_first=True, dropout=drop_prob)
+        self.relu = nn.ReLU()
+        self.fc = nn.Linear(hidden_dim, xi_dim)
+        self.counter = 0
+        self.s_epoch = 1
+        self.writer = SummaryWriter("./run_outputs/regression_board/" + writer_dir)
+    def init_hidden(self, batch_size):
+        weight = next(self.parameters()).data
+        hidden = weight.new(self.n_layers, batch_size, self.hidden_dim).zero_().to(device)
+        return hidden
+
+    def forward(self, y1, xi1, h):
+        assert len(x.size()) == 3, '[GRU]: Input dimension must be of length 3 i.e. [MxSxN]' # M: Batch Size(if batch first), S: Seq Lenght, N: Number of features
+        xi1 = xi1.flatten(-2)
+        inputs = torch.cat([y1, xi1], dim=-1)
+        out, h = self.gru(inputs, h)
+        out = self.fc(self.relu(out))
+        out = out.reshape(out.shape[:-1] + self.xi_dims)
+        return out, h
+
 class DesignNetwork(nn.Module):
 
     def __init__(self, y_dim, xi_dims, batching):
@@ -116,6 +148,7 @@ class DesignNetwork(nn.Module):
         x = self.output_layer(x)
         x = x.reshape(x.shape[:-1] + self.xi_dims)
         return x
+
 
 
 def neg_loss(loss):
@@ -160,7 +193,7 @@ def opt_eig_loss_w_history(design, loss_fn, num_samples, num_steps, optim, time_
     return est_loss_history, wall_times
 
 
-def main(num_steps, num_samples, time_budget, experiment_name, estimators, seed, num_parallel, start_lr, end_lr,
+def main(num_iter, num_steps, num_samples, time_budget, experiment_name, estimators, seed, num_parallel, start_lr, end_lr,
          device, n, p, scale):
     output_dir = "./run_outputs/gradinfo/"
     if not experiment_name:
@@ -185,10 +218,10 @@ def main(num_steps, num_samples, time_budget, experiment_name, estimators, seed,
         w_prior_scale = scale * torch.ones(p, device=device)
         sigma_prior_scale = scale * torch.tensor(1., device=device)
 
-        design_net = DesignNetwork(n, (n, p), (num_parallel,)).to(device)
-
+        writer_dir = "T{} design_outcome".format(int(time.time()) % 10000)
+        design_net = GRUNet(n+n*p, n*p, 32, 2, .0, writer_dir).to(device)
         model_learn_net = make_regression_model(
-            w_prior_loc, w_prior_scale, sigma_prior_scale, design_net)
+            w_prior_loc, w_prior_scale, sigma_prior_scale, design_net, num_iter)
 
         contrastive_samples = num_samples
 
@@ -197,7 +230,7 @@ def main(num_steps, num_samples, time_budget, experiment_name, estimators, seed,
 
         if estimator == 'pce':
             eig_loss = lambda d, N, **kwargs: pce_eig(
-                model=model_learn_net, design=d, observation_labels=["y1", "y2"], target_labels=targets,
+                model=model_learn_net, design=d, observation_labels=["y"+str(i+1) for i in range(num_iter)], target_labels=targets,
                 N=N, M=contrastive_samples, **kwargs)
             loss = neg_loss(eig_loss)
 
@@ -220,51 +253,70 @@ def main(num_steps, num_samples, time_budget, experiment_name, estimators, seed,
                    'loss_history': est_loss_history.cpu(),
                    'wall_times': wall_times.cpu()}
 
-        def evaluate_design(w_loc, w_scale, sigma_scale, design_net, num_parallel,
-                            observation_prefix="y"):
-            design_prototype = torch.zeros(num_parallel, n, p, device=device)
-            ###################################################################################################
-            # Get xi1
-            ###################################################################################################
-            xi1 = torch.randint(2, design_prototype.shape, dtype=torch.float,
-                                device=design_prototype.device)
-            xi1[..., 1] = 1 - xi1[..., 0]
-            xi1 = xi1 / xi1.norm(p=1, dim=-1, keepdim=True)
-
-            ###################################################################################################
-            # Sample theta
-            ###################################################################################################
-            # `w` is shape p, the prior on each component is independent
-            w = pyro.sample("w", dist.Laplace(w_loc, w_scale).to_event(1))
-            # `sigma` is scalar
-            sigma = 1e-6 + pyro.sample("sigma", dist.Exponential(sigma_scale)).unsqueeze(-1)
-
-            ###################################################################################################
-            # Sample y1
-            ###################################################################################################
-            mean1 = rmv(xi1, w)
-            sd = sigma
-            y1 = pyro.sample(observation_prefix + '1', dist.Normal(mean1, sd).to_event(1))
-
-            ###################################################################################################
-            # Get xi2
-            ###################################################################################################
-            xi2 = design_net(y1, xi1)
-            xi2 = xi2 / xi2.norm(p=1, dim=-1, keepdim=True)
-
-            ###################################################################################################
-            # Sample y2
-            ###################################################################################################
-            mean2 = rmv(xi2, w)
-            sd = sigma
-            y2 = pyro.sample(observation_prefix + '2', dist.Normal(mean2, sd).to_event(1))
-
-            return y1, y2, xi1, xi2
-
-        return evaluate_design, model_learn_net, results, est_loss_history
+        return model_learn_net, results, est_loss_history
     #        with open(results_file, 'wb') as f:
     #            pickle.dump(results, f)
 
+# if __name__ == "__main__":
+#     parser = argparse.ArgumentParser(description="Gradient-based design optimization (one shot) with a linear model")
+#     parser.add_argument("--num-steps", default=500000, type=int)
+#     parser.add_argument("--time-budget", default=1200, type=int)
+#     parser.add_argument("--num-samples", default=10, type=int)
+#     parser.add_argument("--num-parallel", default=10, type=int)
+#     parser.add_argument("--name", default="", type=str)
+#     parser.add_argument("--estimator", default="pce", type=str)
+#     parser.add_argument("--seed", default=-1, type=int)
+#     parser.add_argument("--start-lr", default=0.001, type=float)
+#     parser.add_argument("--end-lr", default=0.001, type=float)
+#     parser.add_argument("--device", default="cuda:0", type=str)
+#     parser.add_argument("-n", default=1, type=int)
+#     parser.add_argument("-p", default=2, type=int)
+#     parser.add_argument("--scale", default=1., type=float)
+#     args = parser.parse_args()
+#     main(args.num_steps, args.num_samples, args.time_budget, args.name, args.estimator, args.seed, args.num_parallel,
+#          args.start_lr, args.end_lr, args.device, args.n, args.p, args.scale)
+
+
+def evaluate_design(w_loc, w_scale, sigma_scale, design_net, num_parallel,
+                    observation_prefix="y"):
+    design_prototype = torch.zeros(num_parallel, n, p, device=device)
+    ###################################################################################################
+    # Get xi1
+    ###################################################################################################
+    xi1 = torch.randint(2, design_prototype.shape, dtype=torch.float,
+                        device=design_prototype.device)
+    xi1[..., 1] = 1 - xi1[..., 0]
+    xi1 = xi1 / xi1.norm(p=1, dim=-1, keepdim=True)
+
+    ###################################################################################################
+    # Sample theta
+    ###################################################################################################
+    # `w` is shape p, the prior on each component is independent
+    w = pyro.sample("w", dist.Laplace(w_loc, w_scale).to_event(1))
+    # `sigma` is scalar
+    sigma = 1e-6 + pyro.sample("sigma", dist.Exponential(sigma_scale)).unsqueeze(-1)
+
+    ###################################################################################################
+    # Sample y1
+    ###################################################################################################
+    mean1 = rmv(xi1, w)
+    sd = sigma
+    y1 = pyro.sample(observation_prefix + '1', dist.Normal(mean1, sd).to_event(1))
+
+    ###################################################################################################
+    # Get xi2
+    ###################################################################################################
+    xi2 = design_net(y1, xi1)
+    xi2 = xi2 / xi2.norm(p=1, dim=-1, keepdim=True)
+
+    ###################################################################################################
+    # Sample y2
+    ###################################################################################################
+    mean2 = rmv(xi2, w)
+    sd = sigma
+    y2 = pyro.sample(observation_prefix + '2', dist.Normal(mean2, sd).to_event(1))
+
+    return y1, y2, xi1, xi2
 
 def make_regression_for_loss(w_loc, w_scale, sigma_scale, observation_prefix="y"):
     def regression_model(design_prototype):
@@ -309,112 +361,35 @@ def make_regression_for_loss(w_loc, w_scale, sigma_scale, observation_prefix="y"
 
     return regression_model
 
-# num_steps, num_samples, time_budget, experiment_name, estimators, seed, num_parallel, \
-# start_lr, end_lr, device, n, p, scale = 1000, 10, 120, "tester", "pce", -1, 10, .05, \
-#                                         .001, "cpu", 1, 2, 1.
-# #    num_iter = 7
-# num_parallel = 30
-# model, results, est_loss_history = main(num_steps, num_samples, time_budget, experiment_name, estimators, seed,
-#                       num_parallel, start_lr, end_lr,
-#                       device, n, p, scale)
+num_steps, num_samples, time_budget, experiment_name, estimators, seed, num_parallel, \
+start_lr, end_lr, device, n, p, scale = 1000, 10, 120, "tester", "pce", -1, 10, .05, \
+                                        .001, "cpu", 1, 2, 1.
+num_iter = 7
 
-# design_net = DesignNetwork(n, (n, p), (num_parallel,)).to(device)
-# pyro.module('design_net', design_net, True)
-#
-#
-# w_loc = torch.zeros(p, device=device)
-# w_scale = scale * torch.ones(p, device=device)
-# sigma_scale = scale * torch.tensor(1., device=device)
-#
-#
-# model_loss = make_regression_for_loss(w_loc, w_scale, sigma_scale, observation_prefix="y")
-#
-# targets = ["w", "sigma"]
-#
-# eig_loss = lambda d, N, **kwargs: pce_eig(
-#     model=model_loss, design=d, observation_labels=["y1", "y2"], target_labels=targets,
-#     N=N, M=10, **kwargs)
-# loss = neg_loss(eig_loss)
-#
-# y1, y2, xi1, xi2 = evaluate_design(w_loc, w_scale, sigma_scale, design_net, num_parallel)
-# d = torch.cat((xi1, xi2), axis = 1)
+model, results, est_loss_history = main(num_iter, num_steps, num_samples, time_budget,
+                                        experiment_name, estimators, seed, num_parallel,
+                                        start_lr, end_lr, device, n, p, scale)
 
-# est_loss_history, d
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Gradient-based design optimization (one shot) with a linear model")
-    parser.add_argument("--num-steps", default=1000, type=int)
-    parser.add_argument("--time-budget", default=120, type=int)
-    parser.add_argument("--num-samples", default=10, type=int)
-    parser.add_argument("--num-parallel", default=30, type=int)
-    parser.add_argument("--name", default="tester", type=str)
-    parser.add_argument("--estimator", default="pce", type=str)
-    parser.add_argument("--seed", default=-1, type=int)
-    parser.add_argument("--start-lr", default=0.05, type=float)
-    parser.add_argument("--end-lr", default=0.001, type=float)
-    parser.add_argument("--device", default="cpu", type=str)
-    parser.add_argument("-n", default=1, type=int)
-    parser.add_argument("-p", default=2, type=int)
-    parser.add_argument("--scale", default=1., type=float)
-    args = parser.parse_args()
-    evaluate_design, model, results, est_loss_history = main(args.num_steps, args.num_samples,
-                                            args.time_budget, args.name,
-                                            args.estimator, args.seed,
-                                            args.num_parallel, args.start_lr,
-                                            args.end_lr, args.device, args.n,
-                                            args.p, args.scale)
-
-    design_net = DesignNetwork(args.n, (args.n, args.p), (args.num_parallel,)).to(args.device)
-    pyro.module('design_net', design_net, True)
-
-    w_loc = torch.zeros(args.p, device=args.device)
-    w_scale = args.scale * torch.ones(args.p, device=args.device)
-    sigma_scale = args.scale * torch.tensor(1., device=args.device)
-
-    model_loss = make_regression_for_loss(w_loc, w_scale, sigma_scale, observation_prefix="y")
-
-    targets = ["w", "sigma"]
-
-    eig_loss = lambda d, N, **kwargs: pce_eig(
-        model=model_loss, design=d, observation_labels=["y1", "y2"], target_labels=targets,
-        N=N, M=10, **kwargs)
-    loss = neg_loss(eig_loss)
-
-    y1, y2, xi1, xi2 = evaluate_design( w_loc, w_scale, sigma_scale, design_net, args.num_parallel)
-    d = torch.cat((xi1, xi2), axis=1)
-    output_dir = "./run_outputs/regression_rollout/"+args.name
-    with open(output_dir + "xi1", 'ab') as f:
-        pickle.dump(xi1, f)
-    with open(output_dir + "xi2", 'ab') as f:
-        pickle.dump(xi2, f)
-    with open(output_dir + "y1", 'ab') as f:
-        pickle.dump(y1, f)
-    with open(output_dir + "y2", 'ab') as f:
-        pickle.dump(y2, f)
-    with open(output_dir + "loss", 'ab') as f:
-        pickle.dump(est_loss_history, f)
-    message = str(args).replace(", ", "\n")
-    f = open(output_dir+".txt", "w+")
-    f.write(message)
-    f.close()
+writer_dir = "T{} design_outcome".format(int(time.time()) % 10000)
+design_net = GRUNet(n, (n, p), (num_parallel,), 32, 2, .0, writer_dir).to(device)
+pyro.module('design_net', design_net, True)
 
 
+w_loc = torch.zeros(p, device=device)
+w_scale = scale * torch.ones(p, device=device)
+sigma_scale = scale * torch.tensor(1., device=device)
 
-# if __name__ == "__main__":
-#     parser = argparse.ArgumentParser(description="Gradient-based design optimization (one shot) with a linear model")
-#     parser.add_argument("--num-steps", default=500000, type=int)
-#     parser.add_argument("--time-budget", default=1200, type=int)
-#     parser.add_argument("--num-samples", default=10, type=int)
-#     parser.add_argument("--num-parallel", default=10, type=int)
-#     parser.add_argument("--name", default="", type=str)
-#     parser.add_argument("--estimator", default="pce", type=str)
-#     parser.add_argument("--seed", default=-1, type=int)
-#     parser.add_argument("--start-lr", default=0.001, type=float)
-#     parser.add_argument("--end-lr", default=0.001, type=float)
-#     parser.add_argument("--device", default="cuda:0", type=str)
-#     parser.add_argument("-n", default=1, type=int)
-#     parser.add_argument("-p", default=2, type=int)
-#     parser.add_argument("--scale", default=1., type=float)
-#     args = parser.parse_args()
-#     main(args.num_steps, args.num_samples, args.time_budget, args.name, args.estimator, args.seed, args.num_parallel,
-#          args.start_lr, args.end_lr, args.device, args.n, args.p, args.scale)
+
+model_loss = make_regression_for_loss(w_loc, w_scale, sigma_scale, observation_prefix="y")
+
+targets = ["w", "sigma"]
+
+eig_loss = lambda d, N, **kwargs: pce_eig(
+    model=model_loss, design=d, observation_labels=["y"+str(i+1) for i in range(num_iter)], target_labels=targets,
+    N=N, M=10, **kwargs)
+loss = neg_loss(eig_loss)
+
+#y1, y2, xi1, xi2 = evaluate_design(w_loc, w_scale, sigma_scale, design_net, num_parallel)
+#d = torch.cat((xi1, xi2))
+
+#loss = loss(d, 100)

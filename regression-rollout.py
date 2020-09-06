@@ -218,7 +218,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Regression rollouts"
                                                  " iterated experiment design")
     parser.add_argument("--num-steps", nargs="?", default=2, type=int) #num iterations
-    parser.add_argument("--num-parallel", nargs="?", default=2, type=int) #batch size
+    parser.add_argument("--num-parallel", nargs="?", default=10, type=int) #batch size
     parser.add_argument("--name", nargs="?", default="", type=str)
     parser.add_argument("--typs", nargs="?", default="pce-grad", type=str)
     parser.add_argument("--seed", nargs="?", default=-1, type=int)
