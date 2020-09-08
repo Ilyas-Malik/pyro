@@ -121,9 +121,13 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, num_gradient_step
         w_scale = scale * torch.ones(p)
         sigma_scale = scale * torch.tensor(1.)
 
-        true_w_cov = torch.tensor([[1., .2],
-                                    [.2, 2.]])
-        true_w_loc = torch.tensor([.5,-.5])
+        true_w_cov = torch.tensor([[1., 0., .5, 0., 0., 0.],
+                                   [0., 3., 0., 0., 0., -1.],
+                                   [.5, 0., 1., 0., 0., 0.],
+                                   [0., 0., 0., .2, 0., 0.],
+                                   [0., 0., 0., 0., 1., 0.],
+                                   [0., -1., 0., 0., 0., 5.]])
+        true_w_loc = torch.tensor([0., 2., -3., 4., 5., 6.])
         true_w = torch.distributions.multivariate_normal.MultivariateNormal(true_w_loc,
                                                                             true_w_cov).sample()
         true_sigma_scale = .9
