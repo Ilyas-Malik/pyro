@@ -157,7 +157,7 @@ def main(num_steps, num_parallel, experiment_name, typs, seed, num_gradient_step
             if typ in ['posterior-grad', 'pce-grad', 'ace-grad']:
 # put net here xi_1 and y_1, design = net(xi1,y1)
                 model_learn_xi = make_learn_xi_model(model)
-                grad_start_lr, grad_end_lr = 0.05, 0.001
+                grad_start_lr, grad_end_lr = 0.05, 0.0003
 
                 if typ == 'pce-grad':
 
